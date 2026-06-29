@@ -1,14 +1,7 @@
-"""
-Main daemon: listens for Alpha 100 dog positions and forwards to Traccar.
-"""
-
 import argparse
-import time
-import yaml
 import logging
-import signal
-import sys
-from ant_listener import start as start_ant, scan as ant_scan
+import yaml
+from ant_listener import start as ant_start, dump as ant_dump
 from traccar_client import send_position
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -22,25 +15,27 @@ def load_config(path="config/config.yaml"):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scan", action="store_true", help="Scan for nearby ANT+ devices")
+    parser.add_argument("--dump", action="store_true",
+                        help="Raw page dump for protocol analysis, no Traccar forwarding")
     args = parser.parse_args()
 
-    if args.scan:
-        ant_scan()
+    if args.dump:
+        print("Raw dump mode — Ctrl-C to stop")
+        ant_dump()
         return
 
     config = load_config()
     traccar_url = config["traccar"]["url"]
-    serial_port = config["ant"]["serial_port"]
     device_id = config["ant"].get("device_id", 0)
 
     def on_position(data):
         logger.info("Dog '%s' [%s]: %.6f, %.6f  %s",
-                    data["name"], data["device_id"], data["lat"], data["lon"], data["situation"])
+                    data["name"], data["device_id"],
+                    data["lat"], data["lon"], data["situation"])
         send_position(traccar_url, data["device_id"], data["lat"], data["lon"])
 
-    logger.info("Starting ANT+ listener on %s (device_id=%s)", serial_port, device_id)
-    start_ant(serial_port, device_id, on_position)
+    logger.info("Starting — device_id=%s", device_id)
+    ant_start(device_id, on_position)
 
 
 if __name__ == "__main__":
