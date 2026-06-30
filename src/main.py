@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import yaml
 from ant_listener import start as ant_start, dump as ant_dump
 from traccar_client import send_position
@@ -8,7 +9,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def load_config(path="config/config.yaml"):
+def load_config(path=None):
+    if path is None:
+        path = os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml")
     with open(path) as f:
         return yaml.safe_load(f)
 
