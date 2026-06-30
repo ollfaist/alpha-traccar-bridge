@@ -35,7 +35,7 @@ def _semi_to_deg(semi):
 
 def _on_data(data, on_position):
     page = data[0]
-    asset_id = data[1]
+    asset_id = int(data[1])
 
     if page == 0x01:
         sync_buffer[asset_id] = data
@@ -51,7 +51,7 @@ def _on_data(data, on_position):
                      distance, bearing, low_bat, gps_lost)
 
         if not gps_lost:
-            sync_buffer[asset_id + "_meta"] = {
+            sync_buffer[str(asset_id) + "_meta"] = {
                 "distance": distance,
                 "bearing": bearing,
                 "situation": SITUATIONS.get(status_raw, "Code {}".format(status_raw)),
@@ -62,7 +62,7 @@ def _on_data(data, on_position):
     elif page == 0x02:
         if asset_id in sync_buffer:
             p1 = sync_buffer[asset_id]
-            meta = sync_buffer.get(asset_id + "_meta", {})
+            meta = sync_buffer.get(str(asset_id) + "_meta", {})
 
             lat_semi = p1[6] | (p1[7] << 8) | (data[2] << 16) | (data[3] << 24)
             lon_semi = data[4] | (data[5] << 8) | (data[6] << 16) | (data[7] << 24)
