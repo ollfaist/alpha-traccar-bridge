@@ -1,5 +1,6 @@
 """
 Forwards GPS positions to Traccar via OsmAnd HTTP protocol.
+Traccar endpoint: http://<server>:5055/?id=X&lat=Y&lon=Z
 """
 
 import requests
@@ -18,8 +19,8 @@ def send_position(server_url: str, device_id: str, lat: float, lon: float, extra
         params.update(extras)
 
     try:
-        r = requests.get(f"{server_url}/", params=params, timeout=5)
+        r = requests.get(server_url, params=params, timeout=5)
         r.raise_for_status()
-        logger.debug("Sent position for %s: %s, %s", device_id, lat, lon)
+        logger.debug("Sent position for %s: %.6f, %.6f", device_id, lat, lon)
     except requests.RequestException as e:
-        logger.warning("Failed to send position: %s", e)
+        logger.warning("Failed to send to Traccar: %s", e)
