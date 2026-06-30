@@ -22,6 +22,8 @@ SITUATIONS = {
     7: "Not connected",
 }
 
+BATTERY_STATUS = {0: "New", 1: "Good", 2: "Ok", 3: "Low", 4: "Critical"}
+
 sync_buffer = {}
 
 
@@ -76,7 +78,18 @@ def _on_data(data, on_position):
                 "distance": meta.get("distance", 0),
                 "bearing": meta.get("bearing", 0.0),
                 "low_battery": meta.get("low_battery", False),
+                "battery_voltage": sync_buffer.get("collar_battery_voltage"),
+                "battery_status": sync_buffer.get("collar_battery_status"),
             })
+
+    elif page == 0x52:
+        coarse = data[7] & 0x0F
+        fractional = data[6] / 256.0
+        voltage = round(coarse + fractional, 2)
+        status = BATTERY_STATUS.get((data[7] >> 4) & 0x07, "Unknown")
+        sync_buffer["collar_battery_voltage"] = voltage
+        sync_buffer["collar_battery_status"] = status
+        logger.debug("Collar battery: %.2fV (%s)", voltage, status)
 
 
 def start(device_id: int, on_position):
