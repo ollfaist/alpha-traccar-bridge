@@ -29,10 +29,20 @@ def main():
     device_id = config["ant"].get("device_id", 0)
 
     def on_position(data):
-        logger.info("Dog '%s' [%s]: %.6f, %.6f  %s",
+        logger.info("Dog '%s' [%s]: %.6f, %.6f  %s  bat=%s",
                     data["name"], data["device_id"],
-                    data["lat"], data["lon"], data["situation"])
-        send_position(traccar_url, data["device_id"], data["lat"], data["lon"])
+                    data["lat"], data["lon"], data["situation"],
+                    data.get("battery_voltage", "?"))
+        extras = {
+            "bearing": round(data["bearing"]),
+            "altitude": 0,
+        }
+        if data.get("battery_voltage") is not None:
+            extras["batt"] = data["battery_voltage"]
+        if data.get("battery_status"):
+            extras["event"] = "{} dist={}m {}".format(
+                data["situation"], data["distance"], data["battery_status"])
+        send_position(traccar_url, data["device_id"], data["lat"], data["lon"], extras)
 
     logger.info("Starting — device_id=%s", device_id)
     ant_start(device_id, on_position)
