@@ -1,6 +1,5 @@
 ant:
-  serial_port: /dev/ttyUSB0   # ANT+ USB dongle on Pi
-  device_id: 0                # Set after running: python main.py --scan (0 = wildcard)
+  device_id: 0                # 0 = wildcard, accepts any Alpha 100. Run with --dump to see traffic.
 
 traccar:
   url: http://192.168.1.x:5055  # OsmAnd port on your Traccar server

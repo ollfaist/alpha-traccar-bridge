@@ -33,13 +33,13 @@ cp config/config.example.yaml config/config.yaml
 
 ```bash
 source venv/bin/activate
-cd src && python main.py
+python src/main.py
 ```
 
 To verify the ANT+ data before enabling Traccar forwarding:
 
 ```bash
-cd src && python main.py --dump
+python src/main.py --dump
 ```
 
 This prints raw page data from the handheld — useful for verifying the connection and debugging page layouts.
@@ -52,7 +52,21 @@ Enable the OsmAnd port in your Traccar config (`traccar.xml`):
 <entry key='osmand.port'>5055</entry>
 ```
 
-Each dog collar appears as a separate device in Traccar, identified by its asset index from the Alpha 100.
+Each dog collar appears as a separate device in Traccar, identified by its asset index from the Alpha 100. Collar battery voltage (from ANT+ page 0x52) is forwarded as the `batt` attribute.
+
+## Tile proxy (optional)
+
+`tileproxy/` contains a small Flask app that proxies Lantmäteriet's topographic web map (topowebb, CC-BY) as standard XYZ tiles for use as a custom map in Traccar. Lantmäteriet requires HTTP Basic auth, which Traccar's map layer can't send — the proxy adds it.
+
+```bash
+cd tileproxy
+docker build -t tileproxy .
+docker run -d --name tileproxy -p 8085:8085 \
+  -e LM_USER=your@email.com -e LM_PASS=yourpassword \
+  --restart unless-stopped tileproxy
+```
+
+Then set Traccar's server attribute Custom Map URL to `http://<proxy-host>:8085/{z}/{x}/{y}.png`.
 
 ## References
 
