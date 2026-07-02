@@ -6,6 +6,7 @@ Network key and byte layout confirmed via raw capture session.
 """
 
 import logging
+import time
 from openant.easy.node import Node
 from openant.easy.channel import Channel
 
@@ -31,6 +32,16 @@ def _semi_to_deg(semi):
     if semi > 0x7FFFFFFF:
         semi -= 0x100000000
     return (float(semi) / 2147483648.0) * 180.0
+
+
+def _update_name(asset_id):
+    p1 = sync_buffer.get(str(asset_id) + "_name1")
+    p2 = sync_buffer.get(str(asset_id) + "_name2")
+    if p1 is not None and p2 is not None:
+        name = (p1 + p2).strip()
+        if name and sync_buffer.get(str(asset_id) + "_name") != name:
+            sync_buffer[str(asset_id) + "_name"] = name
+            logger.info("Dog %d name: %s", asset_id, name)
 
 
 def _on_data(data, on_position):
@@ -69,9 +80,14 @@ def _on_data(data, on_position):
             lat = _semi_to_deg(lat_semi)
             lon = _semi_to_deg(lon_semi)
 
+            # 0x80000000 semicircles = ±180° — Garmin's "no GPS fix" sentinel
+            if abs(lat) > 179.9 or abs(lon) > 179.9:
+                logger.debug("Dog %d: invalid coords %.1f,%.1f — skipping", asset_id, lat, lon)
+                return
+
             on_position({
                 "device_id": str(asset_id),
-                "name": "Dog {}".format(asset_id),
+                "name": sync_buffer.get(str(asset_id) + "_name", "Dog {}".format(asset_id)),
                 "lat": lat,
                 "lon": lon,
                 "situation": meta.get("situation", "Unknown"),
@@ -81,6 +97,18 @@ def _on_data(data, on_position):
                 "battery_voltage": sync_buffer.get("collar_battery_voltage"),
                 "battery_status": sync_buffer.get("collar_battery_status"),
             })
+
+    elif page == 0x10:
+        # Asset Identifier page 1: color + first 5 chars of the name set in the Alpha 100
+        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
+        sync_buffer[str(asset_id) + "_name1"] = name_part
+        _update_name(asset_id)
+
+    elif page == 0x11:
+        # Asset Identifier page 2: type + last 5 chars of the name
+        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
+        sync_buffer[str(asset_id) + "_name2"] = name_part
+        _update_name(asset_id)
 
     elif page == 0x52:
         coarse = data[7] & 0x0F
@@ -92,25 +120,45 @@ def _on_data(data, on_position):
         logger.debug("Collar battery: %.2fV (%s)", voltage, status)
 
 
-def start(device_id: int, on_position):
-    """Listen for Alpha 100 broadcasts and call on_position(dict) on each fix."""
-    node = Node()
-    node.set_network_key(0x00, NETWORK_KEY)
+def _open_channel(node, device_id, on_position):
     channel = node.new_channel(Channel.Type.BIDIRECTIONAL_RECEIVE)
     channel.on_broadcast_data = lambda data: _on_data(data, on_position)
+    channel.on_burst_data = lambda data: _on_data(data, on_position)
+    channel.on_close = lambda: logger.warning("ANT+ channel closed")
     channel.set_period(8192)
     channel.set_rf_freq(57)
     channel.set_id(device_id, 41, 0)
-
+    channel.open()
     logger.info("ANT+ channel open — listening for Alpha 100")
-    try:
-        channel.open()
-        node.start()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        channel.close()
-        node.stop()
+    return channel
+
+
+def start(device_id: int, on_position, reconnect_delay: int = 5):
+    """Listen for Alpha 100 broadcasts and call on_position(dict) on each fix.
+
+    Automatically reconnects if the ANT+ node drops.
+    """
+    while True:
+        node = None
+        try:
+            node = Node()
+            node.set_network_key(0x00, NETWORK_KEY)
+            _open_channel(node, device_id, on_position)
+            node.start()
+            # node.start() returns normally only on clean shutdown
+            logger.warning("ANT+ node.start() returned — reconnecting in %ds", reconnect_delay)
+        except KeyboardInterrupt:
+            logger.info("Shutting down ANT+ listener")
+            break
+        except Exception as exc:
+            logger.error("ANT+ error: %s — reconnecting in %ds", exc, reconnect_delay)
+        finally:
+            if node is not None:
+                try:
+                    node.stop()
+                except Exception:
+                    pass
+        time.sleep(reconnect_delay)
 
 
 def dump():
