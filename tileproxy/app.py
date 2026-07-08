@@ -2,11 +2,14 @@ import math
 import os
 from flask import Flask, Response
 import requests
+from render_fastighet import render_tile, find_gpkg_files
 
 app = Flask(__name__)
 
 # Lantmäteriet credentials — set LM_USER and LM_PASS in the container environment
 AUTH = (os.environ["LM_USER"], os.environ["LM_PASS"])
+
+_GPKG_FILES = find_gpkg_files()
 
 TOPOWEBB_URL = (
     "https://maps.lantmateriet.se/open/topowebb-ccby/v1/wmts/1.0.0"
@@ -37,6 +40,12 @@ def tile(z, x, y):
     url = TOPOWEBB_URL.format(z=z, x=x, y=y)
     r = requests.get(url, auth=AUTH, timeout=10)
     return Response(r.content, content_type="image/png", status=r.status_code)
+
+
+@app.route("/fastighet/<int:z>/<int:x>/<int:y>.png")
+def fastighet(z, x, y):
+    png = render_tile(z, x, y, _GPKG_FILES)
+    return Response(png, content_type="image/png")
 
 
 if __name__ == "__main__":
