@@ -162,10 +162,11 @@
 </div>
 
 <script>
-var map = L.map('map', { zoomControl: true }).setView([63.28, 13.25], 12);
+var map = L.map('map', { zoomControl: true, maxZoom: 20 }).setView([63.28, 13.25], 12);
 
 L.tileLayer('/combined/{z}/{x}/{y}.png', {
-  maxZoom: 18,
+  maxNativeZoom: 15,
+  maxZoom: 20,
   attribution: '© Lantmäteriet CC-BY'
 }).addTo(map);
 
