@@ -2,6 +2,8 @@ import math
 import os
 from flask import Flask, Response
 import requests
+from io import BytesIO
+from PIL import Image
 from render_fastighet import render_tile, find_gpkg_files
 
 app = Flask(__name__)
@@ -49,6 +51,19 @@ def tile(z, x, y):
 def fastighet(z, x, y):
     png = render_tile(z, x, y, _GPKG_FILES)
     return Response(png, content_type="image/png", headers=_CORS)
+
+
+@app.route("/combined/<int:z>/<int:x>/<int:y>.png")
+def combined(z, x, y):
+    """Topowebb with fastighetsgränser baked in — usable as standalone base map."""
+    url = TOPOWEBB_URL.format(z=z, x=x, y=y)
+    r = requests.get(url, auth=AUTH, timeout=10)
+    base = Image.open(BytesIO(r.content)).convert("RGBA")
+    overlay = Image.open(BytesIO(render_tile(z, x, y, _GPKG_FILES))).convert("RGBA")
+    base.paste(overlay, mask=overlay)
+    buf = BytesIO()
+    base.convert("RGB").save(buf, format="PNG")
+    return Response(buf.getvalue(), content_type="image/png", headers=_CORS)
 
 
 if __name__ == "__main__":
