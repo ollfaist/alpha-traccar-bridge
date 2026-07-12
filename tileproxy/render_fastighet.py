@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 # Load all .gpkg files found next to this file
 _GPKG_DIR = Path(__file__).parent / "fastighet"
 
-_LINE_COLOR = (200, 50, 50, 180)   # semi-transparent red
-_LINE_WIDTH = 1
+_LINE_COLOR = (255, 220, 0, 230)   # yellow, mostly opaque
+_LINE_WIDTH = 2
 _TILE_SIZE = 256
 
 
