@@ -1,6 +1,6 @@
 import math
 import os
-from flask import Flask, Response
+from flask import Flask, Response, send_from_directory
 import requests
 from io import BytesIO
 from PIL import Image
@@ -64,6 +64,11 @@ def combined(z, x, y):
     buf = BytesIO()
     base.convert("RGB").save(buf, format="PNG")
     return Response(buf.getvalue(), content_type="image/png", headers=_CORS)
+
+
+@app.route("/draw")
+def draw():
+    return send_from_directory(".", "draw.html")
 
 
 if __name__ == "__main__":
