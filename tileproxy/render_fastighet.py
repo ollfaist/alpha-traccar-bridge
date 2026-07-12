@@ -130,16 +130,26 @@ def _parse_wkb(wkb, offset=0):
     return results
 
 
+_MARGIN = 8  # extra pixels around tile to avoid seam gaps
+
+
 def render_tile(z: int, x: int, y: int, gpkg_paths: list) -> bytes:
     """Render fastighetsgränser for tile (z, x, y) as transparent PNG bytes."""
     e_w, n_s, e_e, n_n, lon_w, lat_s, lon_e, lat_n = _tile_to_bbox_sweref(z, x, y)
 
-    img = Image.new("RGBA", (_TILE_SIZE, _TILE_SIZE), (0, 0, 0, 0))
+    # Expand bbox by MARGIN pixels so lines crossing tile edges are drawn fully
+    de = (e_e - e_w) / _TILE_SIZE * _MARGIN
+    dn = (n_n - n_s) / _TILE_SIZE * _MARGIN
+    q_e_w, q_e_e = e_w - de, e_e + de
+    q_n_s, q_n_n = n_s - dn, n_n + dn
+
+    canvas = _TILE_SIZE + 2 * _MARGIN
+    img = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
     def to_px(easting, northing):
-        px = (easting - e_w) / (e_e - e_w) * _TILE_SIZE
-        py = (1 - (northing - n_s) / (n_n - n_s)) * _TILE_SIZE
+        px = (easting - q_e_w) / (q_e_e - q_e_w) * canvas
+        py = (1 - (northing - q_n_s) / (q_n_n - q_n_s)) * canvas
         return px, py
 
     drawn = 0
@@ -151,7 +161,7 @@ def render_tile(z: int, x: int, y: int, gpkg_paths: list) -> bytes:
                 "SELECT g.geom FROM registerenhetsomradesgrans g "
                 "JOIN rtree_registerenhetsomradesgrans_geom r ON g.fid = r.id "
                 "WHERE r.minx <= ? AND r.maxx >= ? AND r.miny <= ? AND r.maxy >= ?",
-                (e_e, e_w, n_n, n_s)
+                (q_e_e, q_e_w, q_n_n, q_n_s)
             )
             for (blob,) in cur.fetchall():
                 for coords in _parse_gpkg_geom(blob):
@@ -163,6 +173,9 @@ def render_tile(z: int, x: int, y: int, gpkg_paths: list) -> bytes:
             conn.close()
         except Exception as exc:
             logger.warning("GeoPackage error %s: %s", gpkg_path, exc)
+
+    # Crop back to exact tile size
+    img = img.crop((_MARGIN, _MARGIN, _MARGIN + _TILE_SIZE, _MARGIN + _TILE_SIZE))
 
     logger.debug("Tile %d/%d/%d: drew %d lines", z, x, y, drawn)
     buf = BytesIO()
