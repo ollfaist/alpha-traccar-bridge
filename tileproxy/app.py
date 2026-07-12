@@ -35,17 +35,20 @@ def _tile_to_bbox_3857(z, x, y):
     return lon_to_m(lon_w), lat_to_m(lat_s), lon_to_m(lon_e), lat_to_m(lat_n)
 
 
+_CORS = {"Access-Control-Allow-Origin": "*"}
+
+
 @app.route("/<int:z>/<int:x>/<int:y>.png")
 def tile(z, x, y):
     url = TOPOWEBB_URL.format(z=z, x=x, y=y)
     r = requests.get(url, auth=AUTH, timeout=10)
-    return Response(r.content, content_type="image/png", status=r.status_code)
+    return Response(r.content, content_type="image/png", status=r.status_code, headers=_CORS)
 
 
 @app.route("/fastighet/<int:z>/<int:x>/<int:y>.png")
 def fastighet(z, x, y):
     png = render_tile(z, x, y, _GPKG_FILES)
-    return Response(png, content_type="image/png")
+    return Response(png, content_type="image/png", headers=_CORS)
 
 
 if __name__ == "__main__":
