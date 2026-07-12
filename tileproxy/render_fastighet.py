@@ -87,6 +87,47 @@ def _wgs84_to_sweref(lon, lat):
     return x, y
 
 
+def _sweref_to_wgs84(easting, northing):
+    """Inverse transverse Mercator: SWEREF 99 TM → WGS84 lat/lon (iterative)."""
+    a = 6378137.0
+    f = 1 / 298.257222101
+    lon0 = 15.0
+    k0 = 0.9996
+    fe = 500000.0
+
+    b = a * (1 - f)
+    e2 = 1 - (b / a) ** 2
+
+    A0 = 1 - e2/4 - 3*e2**2/64 - 5*e2**3/256
+    A2 = 3/8 * (e2 + e2**2/4 + 15*e2**3/128)
+    A4 = 15/256 * (e2**2 + 3*e2**3/4)
+    A6 = 35*e2**3/3072
+
+    def meridian_arc(lat_r):
+        return a * (A0*lat_r - A2*math.sin(2*lat_r) + A4*math.sin(4*lat_r) - A6*math.sin(6*lat_r))
+
+    # Footpoint latitude by Newton iteration
+    M = northing / k0
+    lat_r = M / (a * A0)
+    for _ in range(6):
+        lat_r += (M - meridian_arc(lat_r)) / (a * A0)
+
+    de = easting - fe
+    N = a / math.sqrt(1 - e2 * math.sin(lat_r) ** 2)
+    t = math.tan(lat_r)
+    eta2 = (e2 / (1 - e2)) * math.cos(lat_r) ** 2
+    d = de / (k0 * N)
+
+    lat = lat_r - (t * (1 + eta2) / 2) * d**2 \
+        + (t * (5 + 3*t**2 + 6*eta2 - 6*t**2*eta2) / 24) * d**4 \
+        - (t * (61 + 90*t**2 + 45*t**4) / 720) * d**6
+    lon = math.radians(lon0) + (d
+        - ((1 + 2*t**2 + eta2) / 6) * d**3
+        + ((5 + 28*t**2 + 24*t**4) / 120) * d**5) / math.cos(lat_r)
+
+    return math.degrees(lat), math.degrees(lon)
+
+
 def _parse_gpkg_geom(blob):
     """Parse GeoPackage geometry blob and return list of (x, y) coordinate lists."""
     if not blob or len(blob) < 8:
@@ -130,27 +171,32 @@ def _parse_wkb(wkb, offset=0):
     return results
 
 
-_MARGIN = 8  # extra pixels around tile to avoid seam gaps
-
-
 def render_tile(z: int, x: int, y: int, gpkg_paths: list) -> bytes:
     """Render fastighetsgränser for tile (z, x, y) as transparent PNG bytes."""
     e_w, n_s, e_e, n_n, lon_w, lat_s, lon_e, lat_n = _tile_to_bbox_sweref(z, x, y)
 
-    # Expand bbox by MARGIN pixels so lines crossing tile edges are drawn fully
-    de = (e_e - e_w) / _TILE_SIZE * _MARGIN
-    dn = (n_n - n_s) / _TILE_SIZE * _MARGIN
-    q_e_w, q_e_e = e_w - de, e_e + de
-    q_n_s, q_n_n = n_s - dn, n_n + dn
+    # Widen the SWEREF query bbox slightly — it is approximate, and features
+    # whose vertices project just outside must still be drawn for seam continuity
+    pad = (e_e - e_w) * 0.05
+    q_e_w, q_e_e = e_w - pad, e_e + pad
+    q_n_s, q_n_n = n_s - pad, n_n + pad
 
-    canvas = _TILE_SIZE + 2 * _MARGIN
-    img = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    img = Image.new("RGBA", (_TILE_SIZE, _TILE_SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
+    # Exact per-vertex projection SWEREF → WGS84 → Web Mercator → pixel.
+    # Tile edges are exact in Mercator, so adjacent tiles line up perfectly.
+    n_tiles = 2 ** z
+    world = 20037508.34
+    tile_mx_w = (x / n_tiles) * 2 * world - world
+    tile_my_n = world - (y / n_tiles) * 2 * world
+    merc_per_px = (2 * world / n_tiles) / _TILE_SIZE
+
     def to_px(easting, northing):
-        px = (easting - q_e_w) / (q_e_e - q_e_w) * canvas
-        py = (1 - (northing - q_n_s) / (q_n_n - q_n_s)) * canvas
-        return px, py
+        lat, lon = _sweref_to_wgs84(easting, northing)
+        mx = lon * world / 180.0
+        my = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6378137.0
+        return (mx - tile_mx_w) / merc_per_px, (tile_my_n - my) / merc_per_px
 
     drawn = 0
     for gpkg_path in gpkg_paths:
@@ -173,9 +219,6 @@ def render_tile(z: int, x: int, y: int, gpkg_paths: list) -> bytes:
             conn.close()
         except Exception as exc:
             logger.warning("GeoPackage error %s: %s", gpkg_path, exc)
-
-    # Crop back to exact tile size
-    img = img.crop((_MARGIN, _MARGIN, _MARGIN + _TILE_SIZE, _MARGIN + _TILE_SIZE))
 
     logger.debug("Tile %d/%d/%d: drew %d lines", z, x, y, drawn)
     buf = BytesIO()
