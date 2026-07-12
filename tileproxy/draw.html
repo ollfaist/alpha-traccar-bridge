@@ -246,7 +246,8 @@ function updateCoordList() {
 function makeWKT() {
   if (points.length < 3) return '';
   var closed = points.concat([points[0]]);
-  var pairs = closed.map(function(p){ return p[1].toFixed(6) + ' ' + p[0].toFixed(6); });
+  // Traccar uses lat lon order in WKT (non-standard)
+  var pairs = closed.map(function(p){ return p[0].toFixed(6) + ' ' + p[1].toFixed(6); });
   return 'POLYGON((' + pairs.join(', ') + '))';
 }
 
