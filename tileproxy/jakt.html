@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b3a26">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Jaktlaget</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(165deg, #16301f 0%, #1b3a26 45%, #23482f 100%);
+    color: #e8f0e8;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 24px;
+    padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+
+  header { text-align: center; }
+  header .horn { font-size: 44px; }
+  header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    margin-top: 6px;
+  }
+  header p {
+    font-size: 13px;
+    color: #9fb8a3;
+    margin-top: 4px;
+  }
+
+  .knappar {
+    width: 100%;
+    max-width: 340px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  a.knapp {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 22px 20px;
+    border-radius: 14px;
+    text-decoration: none;
+    color: inherit;
+    border: 1px solid rgba(255,255,255,.12);
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    transition: transform .08s;
+  }
+  a.knapp:active { transform: scale(.97); }
+
+  .knapp .ikon { font-size: 34px; flex-shrink: 0; }
+  .knapp .text b { display: block; font-size: 18px; margin-bottom: 3px; }
+  .knapp .text span { font-size: 12.5px; color: rgba(232,240,232,.75); line-height: 1.35; }
+
+  .dela  { background: linear-gradient(135deg, #2c5e3a, #1f4a2c); }
+  .karta { background: linear-gradient(135deg, #29506e, #1d3d57); }
+  .guide { background: linear-gradient(135deg, #5a4a1a, #3d3010); }
+
+  footer {
+    font-size: 11.5px;
+    color: #7a937e;
+    text-align: center;
+    line-height: 1.6;
+  }
+  footer a { color: #a5c3aa; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="horn">🫎</div>
+  <h1>EGGEN, RISTA &amp; HÅLLAND</h1>
+  <p>Jaktlag</p>
+</header>
+
+<div class="knappar">
+  <a class="knapp dela" id="btn-dela" href="#">
+    <span class="ikon">📡</span>
+    <span class="text">
+      <b>Dela position</b>
+      <span>Startar Traccar Client så att laget ser dig</span>
+    </span>
+  </a>
+
+  <a class="knapp karta" id="btn-karta" href="#">
+    <span class="ikon">🗺️</span>
+    <span class="text">
+      <b>Se karta</b>
+      <span>Öppnar kartan med laget och hundarna</span>
+    </span>
+  </a>
+
+  <a class="knapp guide" id="btn-guide" href="#">
+    <span class="ikon">📋</span>
+    <span class="text">
+      <b>Appguide</b>
+      <span>Installationshjälp och inställningar</span>
+    </span>
+  </a>
+</div>
+
+<footer>
+  Lägg till på hemskärmen: meny <b>⋮</b> → "Lägg till på startskärmen"<br>
+  <a href="#" id="webb-link">Öppna kartan i webbläsaren i stället</a>
+</footer>
+
+<script>
+// Servern nås via samma värdnamn som den här sidan (funkar både hemma och via internet)
+var host = location.hostname;
+var webUrl = 'http://' + host + ':8190';
+
+var isAndroid = /android/i.test(navigator.userAgent);
+var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+function intentUrl(pkg, fallback) {
+  return 'intent://#Intent;package=' + pkg +
+         ';S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
+}
+
+var playClient  = 'https://play.google.com/store/apps/details?id=org.traccar.client';
+var playManager = 'https://play.google.com/store/apps/details?id=org.traccar.manager';
+var iosClient   = 'https://apps.apple.com/app/traccar-client/id843156974';
+var iosManager  = 'https://apps.apple.com/app/traccar-manager/id1113966562';
+
+document.getElementById('btn-dela').href =
+  isAndroid ? intentUrl('org.traccar.client', playClient)
+  : isIOS   ? iosClient
+  : playClient;
+
+document.getElementById('btn-karta').href =
+  isAndroid ? intentUrl('org.traccar.manager', playManager)
+  : isIOS   ? iosManager
+  : webUrl;
+
+document.getElementById('webb-link').href = webUrl;
+
+document.getElementById('btn-guide').href = 'http://' + host + ':8085/jaktlag-setup';
+</script>
+</body>
+</html>

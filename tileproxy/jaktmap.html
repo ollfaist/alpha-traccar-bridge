@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Jaktkarta</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+  #map {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+  }
+
+  #topbar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    z-index: 1000;
+    background: rgba(22, 40, 22, 0.88);
+    backdrop-filter: blur(6px);
+    color: #e8f0e8;
+    padding: 10px 16px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #topbar .title { font-size: 15px; font-weight: 700; letter-spacing: .02em; }
+  #topbar .myname {
+    font-size: 12px; color: #9fba9f;
+    cursor: pointer; text-decoration: underline dotted;
+  }
+
+  #panel {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    z-index: 1000;
+    background: rgba(22, 40, 22, 0.90);
+    backdrop-filter: blur(6px);
+    color: #e8f0e8;
+    padding: 10px 16px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  #panel-toggle {
+    text-align: center;
+    color: #9fba9f;
+    font-size: 11px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    margin-bottom: 6px;
+  }
+  .dist-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    font-size: 13px;
+  }
+  .dist-row:last-child { border-bottom: none; }
+  .dist-name { display: flex; align-items: center; gap: 8px; }
+  .dist-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dist-val { color: #9fba9f; font-size: 12px; font-weight: 600; min-width: 56px; text-align: right; }
+  #no-pos { color: #7a9a7a; font-size: 12px; text-align: center; padding: 6px 0; }
+
+  .fab {
+    position: absolute;
+    z-index: 999;
+    background: rgba(22, 40, 22, 0.88);
+    backdrop-filter: blur(4px);
+    color: #e8f0e8;
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 50%;
+    width: 46px; height: 46px;
+    font-size: 20px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+    transition: background .12s;
+  }
+  .fab:active { background: rgba(42, 80, 42, 0.95); }
+  .fab.active { background: rgba(42, 100, 42, 0.95); border-color: #5ab85a; }
+  #btn-center    { right: 16px; bottom: 140px; }
+  #btn-rings     { right: 16px; bottom: 196px; }
+  #btn-granser   { right: 16px; bottom: 252px; }
+  #btn-geofences { right: 16px; bottom: 308px; }
+  #btn-layers    { right: 16px; bottom: 364px; }
+
+  #layer-picker {
+    position: absolute;
+    z-index: 999;
+    right: 72px;
+    bottom: 354px;
+    background: rgba(22, 40, 22, 0.95);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 12px;
+    padding: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    min-width: 140px;
+  }
+  #layer-picker.open { display: flex; }
+  .layer-opt {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #e8f0e8;
+    font-size: 13px;
+    border: 1px solid transparent;
+    transition: background .1s;
+    white-space: nowrap;
+  }
+  .layer-opt:hover, .layer-opt:active { background: rgba(255,255,255,.1); }
+  .layer-opt.selected { background: rgba(42,100,42,.6); border-color: #5ab85a; }
+  .layer-opt .layer-icon { font-size: 18px; flex-shrink: 0; }
+
+  #modal-backdrop {
+    position: absolute; inset: 0; z-index: 2000;
+    background: rgba(0,0,0,.65);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #modal {
+    background: #1b3a26;
+    border-radius: 16px;
+    padding: 24px 20px;
+    width: 300px; max-width: 90vw;
+    max-height: 80vh;
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,.1);
+  }
+  #modal h2 { color: #e8f0e8; font-size: 17px; margin-bottom: 4px; }
+  #modal p { color: #9fba9f; font-size: 12px; margin-bottom: 16px; }
+  .name-btn {
+    display: block; width: 100%;
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 10px;
+    color: #e8f0e8;
+    font-size: 15px;
+    padding: 12px 16px;
+    text-align: left;
+    cursor: pointer;
+    margin-bottom: 8px;
+    transition: background .1s;
+  }
+  .name-btn:hover, .name-btn:active { background: rgba(255,255,255,.15); }
+
+  .leaflet-control-zoom { display: none; }
+  .ring-label {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #2ecc71;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  }
+  .ring-label::before { display: none !important; }
+
+  /* Fastighetsgräns picker */
+  #gr-picker {
+    position: absolute;
+    z-index: 999;
+    right: 72px;
+    bottom: 242px;
+    background: rgba(22, 40, 22, 0.96);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    min-width: 190px;
+  }
+  #gr-picker.open { display: flex; }
+  .gr-section-label {
+    font-size: 10px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: #9fba9f; margin-bottom: 2px;
+  }
+  .gr-toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .gr-toggle-row span { font-size: 13px; color: #e8f0e8; }
+  .gr-switch {
+    width: 38px; height: 22px; border-radius: 11px;
+    background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.2);
+    cursor: pointer; position: relative; transition: background .15s; flex-shrink: 0;
+  }
+  .gr-switch::after {
+    content: ''; position: absolute; top: 3px; left: 3px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #e8f0e8; transition: left .15s;
+  }
+  .gr-switch.on { background: #2ecc71; border-color: #2ecc71; }
+  .gr-switch.on::after { left: 19px; }
+  .gr-seg {
+    display: flex; border-radius: 8px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  .gr-seg-btn {
+    flex: 1; padding: 6px 4px; font-size: 11px; text-align: center;
+    color: rgba(232,240,232,.7); cursor: pointer; transition: background .1s;
+    border-right: 1px solid rgba(255,255,255,.1);
+    white-space: nowrap;
+  }
+  .gr-seg-btn:last-child { border-right: none; }
+  .gr-seg-btn.sel { background: rgba(42,100,42,.7); color: #e8f0e8; font-weight: 600; }
+  .gr-colors {
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .gr-swatch {
+    width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; transition: border-color .1s;
+    flex-shrink: 0;
+  }
+  .gr-swatch.sel { border-color: white; }
+
+  #gf-picker {
+    position: absolute;
+    z-index: 999;
+    right: 72px;
+    bottom: 298px;
+    background: rgba(22, 40, 22, 0.96);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 12px;
+    padding: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    min-width: 210px;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  #gf-picker.open { display: flex; }
+  .gf-category {
+    color: #9fba9f;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    padding: 6px 10px 3px;
+  }
+  .gf-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12.5px;
+    color: #e8f0e8;
+    transition: background .1s;
+  }
+  .gf-item:hover, .gf-item:active { background: rgba(255,255,255,.08); }
+  .gf-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid rgba(255,255,255,.4); }
+  .gf-check {
+    margin-left: auto;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.25);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px;
+  }
+  .gf-check.on { background: #2ecc71; border-color: #2ecc71; }
+  .gf-sep { height: 1px; background: rgba(255,255,255,.08); margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="title">🫎 Jaktkarta</span>
+  <span class="myname" id="myname-label" onclick="showModal()">Välj namn</span>
+</div>
+
+<div id="map"></div>
+
+<button class="fab" id="btn-layers" title="Välj kartlager" onclick="toggleLayerPicker()">🗺️</button>
+<div id="layer-picker"></div>
+<button class="fab" id="btn-geofences" title="Jaktområden" onclick="toggleGfPicker()">🏹</button>
+<div id="gf-picker"></div>
+<button class="fab" id="btn-granser" title="Fastighetsgränser" onclick="toggleGrPicker()">🏡</button>
+<div id="gr-picker"></div>
+<button class="fab" id="btn-rings"   title="Avstånd-ringar"   onclick="toggleRings()">⭕</button>
+<button class="fab" id="btn-center"  title="Centrera på mig"  onclick="centerOnMe()">🎯</button>
+
+<div id="panel">
+  <div id="panel-toggle" onclick="togglePanel()">▲ Avstånd</div>
+  <div id="dist-list"></div>
+</div>
+
+<div id="modal-backdrop">
+  <div id="modal">
+    <h2>Vem är du?</h2>
+    <p>Välj ditt namn — sparas i telefonen.</p>
+    <div id="name-list"></div>
+  </div>
+</div>
+
+<script>
+var HOST = location.hostname;
+var BASE = 'http://' + HOST + ':8085';
+var API  = '/jaktmap/api';
+
+// Base layers
+var topoLayer = L.tileLayer(BASE + '/{z}/{x}/{y}.png', {
+  minNativeZoom: 5, maxNativeZoom: 15, minZoom: 3, maxZoom: 21,
+  attribution: '© Lantmäteriet'
+});
+var satelliteLayer = L.tileLayer(BASE + '/satellite/{z}/{x}/{y}.png', {
+  minNativeZoom: 2, maxNativeZoom: 20, minZoom: 3, maxZoom: 21,
+  attribution: '© Google'
+});
+
+var map = L.map('map', {zoomControl: false, fadeAnimation: false}).setView([63.309874, 13.322030], 14);
+topoLayer.addTo(map);
+
+// Fastighetsgräns overlay
+var grSettings = {
+  on:    false,
+  style: 'dashed',    // dashed | solid | lm
+  color: 'ffdc00'     // hex without #
+};
+var gransLayer = null;
+
+var _GR_COLORS = [
+  { hex: 'ffdc00', label: 'Gul'   },
+  { hex: 'ffffff', label: 'Vit'   },
+  { hex: 'e74c3c', label: 'Röd'   },
+  { hex: '3498db', label: 'Blå'   },
+  { hex: '2ecc71', label: 'Grön'  },
+  { hex: '000000', label: 'Svart' },
+];
+
+// Vektorlager: gränserna hämtas som GeoJSON för synligt område och ritas
+// av Leaflet på canvas. Färg/linjetyp byts direkt utan omhämtning.
+var _grCanvas = L.canvas({ padding: 0.3 });
+var _grFetchTimer = null;
+var _GR_MIN_ZOOM = 11;
+
+function _grStyleFor(feature) {
+  var c = '#' + grSettings.color;
+  if (grSettings.style === 'solid') {
+    return { color: c, weight: 2, opacity: 0.9 };
+  }
+  if (grSettings.style === 'lm') {
+    var t = (feature.properties && feature.properties.t) || '';
+    if (t === 'traktgräns' || t === 'kommungräns' || t === 'riksgräns')
+      return { color: c, weight: 2.5, opacity: 0.9 };
+    if (t === 'kvarterstraktgräns' || t === 'fastighetsstrand')
+      return { color: c, weight: 1.5, dashArray: '2 4', opacity: 0.9 };
+    return { color: c, weight: 1.5, dashArray: '6 5', opacity: 0.9 };
+  }
+  return { color: c, weight: 2, dashArray: '6 5', opacity: 0.9 };
+}
+
+function _refreshGranser() {
+  if (!grSettings.on) return;
+  if (map.getZoom() < _GR_MIN_ZOOM) {
+    if (gransLayer) { map.removeLayer(gransLayer); gransLayer = null; }
+    return;
+  }
+  var b = map.getBounds().pad(0.2);
+  fetch(BASE + '/granser/vector' +
+        '?minlat=' + b.getSouth().toFixed(4) + '&minlon=' + b.getWest().toFixed(4) +
+        '&maxlat=' + b.getNorth().toFixed(4) + '&maxlon=' + b.getEast().toFixed(4))
+    .then(function(r) { return r.json(); })
+    .then(function(gj) {
+      if (!grSettings.on) return;
+      var nl = L.geoJSON(gj, { style: _grStyleFor, renderer: _grCanvas, interactive: false });
+      if (gransLayer) map.removeLayer(gransLayer);
+      gransLayer = nl.addTo(map);
+    })
+    .catch(function(e) { console.error('granser vector:', e); });
+}
+
+function _rebuildGransLayer() {
+  if (!grSettings.on) {
+    if (gransLayer) { map.removeLayer(gransLayer); gransLayer = null; }
+    return;
+  }
+  _refreshGranser();
+}
+
+map.on('moveend', function() {
+  clearTimeout(_grFetchTimer);
+  _grFetchTimer = setTimeout(_refreshGranser, 250);
+});
+
+function buildGrPicker() {
+  var styles = [
+    { id: 'dashed', label: 'Streckad' },
+    { id: 'solid',  label: 'Heldragen' },
+    { id: 'lm',     label: 'LM-stil' },
+  ];
+  var swatches = _GR_COLORS.map(function(c) {
+    return '<div class="gr-swatch' + (c.hex === grSettings.color ? ' sel' : '') + '" ' +
+      'style="background:#' + c.hex + '" title="' + c.label + '" onclick="setGrColor(\'' + c.hex + '\')"></div>';
+  }).join('');
+  var segs = styles.map(function(s) {
+    return '<div class="gr-seg-btn' + (s.id === grSettings.style ? ' sel' : '') + '" onclick="setGrStyle(\'' + s.id + '\')">' + s.label + '</div>';
+  }).join('');
+
+  document.getElementById('gr-picker').innerHTML =
+    '<div>' +
+      '<div class="gr-toggle-row">' +
+        '<span>Fastighetsgränser</span>' +
+        '<div class="gr-switch' + (grSettings.on ? ' on' : '') + '" id="gr-sw" onclick="toggleGrOn()"></div>' +
+      '</div>' +
+    '</div>' +
+    '<div>' +
+      '<div class="gr-section-label">Linjetyp</div>' +
+      '<div class="gr-seg">' + segs + '</div>' +
+    '</div>' +
+    '<div>' +
+      '<div class="gr-section-label">Färg</div>' +
+      '<div class="gr-colors">' + swatches + '</div>' +
+    '</div>';
+}
+
+function toggleGrOn() {
+  grSettings.on = !grSettings.on;
+  var sw = document.getElementById('gr-sw');
+  if (sw) sw.className = 'gr-switch' + (grSettings.on ? ' on' : '');
+  _rebuildGransLayer();
+  document.getElementById('btn-granser').classList.toggle('active', grSettings.on);
+}
+
+function setGrStyle(s) {
+  grSettings.style = s;
+  buildGrPicker();
+  if (gransLayer) gransLayer.setStyle(_grStyleFor);
+}
+
+function setGrColor(c) {
+  grSettings.color = c;
+  buildGrPicker();
+  if (gransLayer) gransLayer.setStyle(_grStyleFor);
+}
+
+function toggleGrPicker() {
+  var el = document.getElementById('gr-picker');
+  if (el.classList.contains('open')) { closeGrPicker(); return; }
+  buildGrPicker();
+  el.classList.add('open');
+  document.getElementById('btn-granser').classList.add('active');
+  setTimeout(function() { document.addEventListener('click', _grPickerOutsideClick); }, 0);
+}
+
+function closeGrPicker() {
+  document.getElementById('gr-picker').classList.remove('open');
+  document.getElementById('btn-granser').classList.toggle('active', grSettings.on);
+  document.removeEventListener('click', _grPickerOutsideClick);
+}
+
+function _grPickerOutsideClick(e) {
+  var picker = document.getElementById('gr-picker');
+  var btn    = document.getElementById('btn-granser');
+  if (!picker.contains(e.target) && e.target !== btn) closeGrPicker();
+}
+var geofenceData   = null;   // loaded once
+var geofenceLayers = {};    // id → Leaflet layer
+var activeGf       = {};    // id → bool
+
+// --- Layer picker ---
+
+var baseLayers = [
+  { id: 'topo',      label: 'Topografisk',  icon: '🗺️',  layer: topoLayer },
+  { id: 'satellite', label: 'Satellit',     icon: '🛰️',  layer: satelliteLayer },
+];
+var activeBaseId = 'topo';
+
+function buildLayerPicker() {
+  var el = document.getElementById('layer-picker');
+  el.innerHTML = baseLayers.map(function(bl) {
+    return '<div class="layer-opt' + (bl.id === activeBaseId ? ' selected' : '') + '" onclick="selectBaseLayer(\'' + bl.id + '\')">' +
+      '<span class="layer-icon">' + bl.icon + '</span>' + bl.label + '</div>';
+  }).join('');
+}
+
+function selectBaseLayer(id) {
+  if (id === activeBaseId) { closeLayerPicker(); return; }
+  baseLayers.forEach(function(bl) { if (map.hasLayer(bl.layer)) map.removeLayer(bl.layer); });
+  activeBaseId = id;
+  var bl = baseLayers.find(function(b) { return b.id === id; });
+  bl.layer.addTo(map);
+  buildLayerPicker();
+  closeLayerPicker();
+}
+
+function toggleLayerPicker() {
+  var el = document.getElementById('layer-picker');
+  if (el.classList.contains('open')) { closeLayerPicker(); return; }
+  buildLayerPicker();
+  el.classList.add('open');
+  document.getElementById('btn-layers').classList.add('active');
+  setTimeout(function() { document.addEventListener('click', _pickerOutsideClick); }, 0);
+}
+
+function closeLayerPicker() {
+  document.getElementById('layer-picker').classList.remove('open');
+  document.getElementById('btn-layers').classList.remove('active');
+  document.removeEventListener('click', _pickerOutsideClick);
+}
+
+function _pickerOutsideClick(e) {
+  var picker = document.getElementById('layer-picker');
+  var btn    = document.getElementById('btn-layers');
+  if (!picker.contains(e.target) && e.target !== btn) closeLayerPicker();
+}
+
+
+var myDeviceId = parseInt(localStorage.getItem('jaktMyDevice')) || null;
+var devices = {};
+var positions = {};
+var markers = {};
+var ringLayers = [];
+var showRings = false;
+var panelOpen = true;
+
+function getRingSizes(zoom) {
+  if (zoom >= 16) return [25,   50,   100];
+  if (zoom >= 14) return [50,   100,  200];
+  if (zoom >= 12) return [100,  250,  500];
+  if (zoom >= 10) return [250,  500,  1000];
+  return                  [500,  1000, 2000];
+}
+
+function fmtRing(m) {
+  return m >= 1000 ? (m/1000) + ' km' : m + ' m';
+}
+
+function hunterColor(deviceId) {
+  var colors = ['#f39c12','#e67e22','#e74c3c','#9b59b6','#3498db','#1abc9c',
+                '#2ecc71','#f1c40f','#e91e63','#00bcd4','#ff5722','#795548'];
+  return colors[deviceId % colors.length];
+}
+
+function isDog(dev) {
+  if (!dev) return false;
+  var n = dev.name.toLowerCase();
+  return n.indexOf('hund') >= 0 || n.indexOf('dog') >= 0 || dev.uniqueId.indexOf('hund') >= 0;
+}
+
+function makeIcon(deviceId, isMe) {
+  var dev = devices[deviceId];
+  var dog = isDog(dev);
+  var color = isMe ? '#2ecc71' : dog ? '#e74c3c' : hunterColor(deviceId);
+  var size = isMe ? 20 : 14;
+  var border = isMe ? '3px solid white' : '2px solid rgba(255,255,255,.8)';
+  var html = '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;' +
+             'background:' + color + ';border:' + border + ';' +
+             'box-shadow:0 1px 5px rgba(0,0,0,.5)"></div>';
+  return L.divIcon({ className: '', html: html, iconAnchor: [size/2, size/2] });
+}
+
+function haversine(lat1, lon1, lat2, lon2) {
+  var R = 6371000;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLon = (lon2 - lon1) * Math.PI / 180;
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) *
+          Math.sin(dLon/2) * Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function fmtDist(m) {
+  if (m < 1000) return Math.round(m) + ' m';
+  return (m / 1000).toFixed(1) + ' km';
+}
+
+function markerLabel(deviceId) {
+  var dev = devices[deviceId];
+  if (!dev) return '';
+  var isMe = deviceId === myDeviceId;
+  if (isMe) return '<b>' + dev.name + '</b><br><span style="opacity:.7">du</span>';
+  var myPos = positions[myDeviceId];
+  var p = positions[deviceId];
+  if (myPos && myPos.latitude && p && p.latitude) {
+    var d = haversine(myPos.latitude, myPos.longitude, p.latitude, p.longitude);
+    return dev.name + '<br><span style="opacity:.7">' + fmtDist(d) + '</span>';
+  }
+  return dev.name;
+}
+
+function updateMarkers() {
+  Object.values(positions).forEach(function(p) {
+    if (!p.latitude || !p.longitude) return;
+    var dev = devices[p.deviceId];
+    if (!dev) return;
+    var isMe = p.deviceId === myDeviceId;
+    var icon = makeIcon(p.deviceId, isMe);
+    var label = markerLabel(p.deviceId);
+    if (markers[p.deviceId]) {
+      markers[p.deviceId].setLatLng([p.latitude, p.longitude]);
+      markers[p.deviceId].setIcon(icon);
+      markers[p.deviceId].getTooltip().setContent(label);
+    } else {
+      markers[p.deviceId] = L.marker([p.latitude, p.longitude], {icon: icon, zIndexOffset: isMe ? 1000 : 0})
+        .bindTooltip(label, {permanent: true, direction: 'bottom', offset: [0, 4], opacity: 0.92})
+        .addTo(map);
+    }
+  });
+}
+
+function updateDistances() {
+  var myPos = positions[myDeviceId];
+  var list = document.getElementById('dist-list');
+  if (!myPos || !myPos.latitude) {
+    list.innerHTML = '<div id="no-pos">Din position är inte känd ännu.</div>';
+    return;
+  }
+  var rows = Object.values(positions)
+    .filter(function(p) { return p.deviceId !== myDeviceId && p.latitude; })
+    .map(function(p) {
+      var dev = devices[p.deviceId];
+      var dist = haversine(myPos.latitude, myPos.longitude, p.latitude, p.longitude);
+      var color = isDog(dev) ? '#e74c3c' : hunterColor(p.deviceId);
+      var icon = isDog(dev) ? '🐕' : '🧑';
+      return { name: (dev ? dev.name : '?'), dist: dist, color: color, icon: icon };
+    })
+    .sort(function(a, b) { return a.dist - b.dist; });
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div id="no-pos">Inga andra aktiva.</div>';
+    return;
+  }
+  list.innerHTML = rows.map(function(r) {
+    return '<div class="dist-row">' +
+      '<span class="dist-name">' +
+        '<span class="dist-dot" style="background:' + r.color + '"></span>' +
+        r.icon + ' ' + r.name +
+      '</span>' +
+      '<span class="dist-val">' + fmtDist(r.dist) + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+function updateRings() {
+  ringLayers.forEach(function(r) { map.removeLayer(r); });
+  ringLayers = [];
+  if (!showRings) return;
+  var myPos = positions[myDeviceId];
+  if (!myPos || !myPos.latitude) return;
+  var sizes = getRingSizes(map.getZoom());
+  sizes.forEach(function(r) {
+    var circle = L.circle([myPos.latitude, myPos.longitude], {
+      radius: r, color: '#2ecc71', weight: 1.5,
+      fill: false, dashArray: '5 5', opacity: 0.7
+    });
+    circle.bindTooltip(fmtRing(r), {
+      permanent: true, direction: 'right', opacity: 0.75,
+      className: 'ring-label'
+    });
+    ringLayers.push(circle.addTo(map));
+  });
+}
+
+function centerOnMe() {
+  var myPos = positions[myDeviceId];
+  if (myPos && myPos.latitude) {
+    map.setView([myPos.latitude, myPos.longitude], Math.max(map.getZoom(), 15));
+  }
+}
+
+function toggleRings() {
+  showRings = !showRings;
+  document.getElementById('btn-rings').classList.toggle('active', showRings);
+  updateRings();
+}
+
+function togglePanel() {
+  panelOpen = !panelOpen;
+  document.getElementById('dist-list').style.display = panelOpen ? '' : 'none';
+  document.getElementById('panel-toggle').textContent = (panelOpen ? '▲' : '▼') + ' Avstånd';
+}
+
+function showModal() {
+  document.getElementById('modal-backdrop').style.display = 'flex';
+}
+
+function closeModal() {
+  document.getElementById('modal-backdrop').style.display = 'none';
+}
+
+function buildNameList() {
+  var hunters = Object.values(devices).filter(function(d) { return !isDog(d); });
+  hunters.sort(function(a, b) { return a.name.localeCompare(b.name); });
+  var html = hunters.map(function(d) {
+    return '<button class="name-btn" onclick="selectName(' + d.id + ')">' + d.name + '</button>';
+  }).join('');
+  document.getElementById('name-list').innerHTML = html;
+}
+
+function selectName(deviceId) {
+  myDeviceId = deviceId;
+  localStorage.setItem('jaktMyDevice', deviceId);
+  var dev = devices[deviceId];
+  document.getElementById('myname-label').textContent = dev ? dev.name : '?';
+  closeModal();
+  updateMarkers();
+  updateDistances();
+  updateRings();
+}
+
+async function fetchPositions() {
+  try {
+    var r = await fetch(API + '/positions');
+    var pos = await r.json();
+    pos.forEach(function(p) { positions[p.deviceId] = p; });
+    updateMarkers();
+    updateDistances();
+    updateRings();
+  } catch(e) { console.error('positions:', e); }
+}
+
+async function init() {
+  try {
+    var r = await fetch(API + '/devices');
+    var devs = await r.json();
+    devs.forEach(function(d) { devices[d.id] = d; });
+    buildNameList();
+  } catch(e) { console.error('devices:', e); }
+
+  if (myDeviceId && devices[myDeviceId]) {
+    document.getElementById('myname-label').textContent = devices[myDeviceId].name;
+    closeModal();
+  }
+
+  await fetchPositions();
+  setInterval(fetchPositions, 5000);
+}
+
+// --- Geofences ---
+
+function gfCategory(gf) {
+  var desc  = (gf.description || '').toLowerCase();
+  var color = (gf.attributes && gf.attributes.color) || '';
+  if (desc.indexOf('förbud') >= 0 || color.toLowerCase() === '#cc0000') return 'Förbudsområde';
+  return 'Jaktområde';
+}
+
+function gfGroup(gf) {
+  var name = gf.name.toLowerCase();
+  var desc = (gf.description || '').toLowerCase();
+  if (name.indexOf('norra') >= 0 || desc.indexOf('norra') >= 0) return 'Norra';
+  if (name.indexOf('södra') >= 0 || desc.indexOf('södra') >= 0) return 'Södra';
+  // Förbudsområde utan nord/syd-indikator hör till södra
+  if (gfCategory(gf) === 'Förbudsområde') return 'Södra';
+  // Strip trailing " omr N" or " N" to find shared base name
+  return gf.name.replace(/\s+(omr\s*)?\d+\s*$/i, '').trim();
+}
+
+function buildGfLayer(gf) {
+  var attr  = gf.attributes || {};
+  var color = attr.color || '#2ecc71';
+  var fill  = (typeof attr.fill === 'number') ? attr.fill : 0.15;
+  var opts  = { color: color, weight: 2, fillColor: color, fillOpacity: fill, dashArray: '6 4' };
+  var poly  = parseWktPolygon(gf.area);
+  var layer = null;
+  if (poly) {
+    layer = L.polygon(poly, opts);
+  } else {
+    var circ = parseWktCircle(gf.area);
+    if (circ) layer = L.circle(circ.latlng, Object.assign({}, opts, { radius: circ.radius }));
+  }
+  if (layer) {
+    var desc = gf.description ? '<br><span style="color:#9fba9f;font-size:12px">' + gf.description + '</span>' : '';
+    layer.bindPopup('<b>' + gf.name + '</b>' + desc, { className: 'fastighet-popup' });
+  }
+  return layer;
+}
+
+function buildGfPicker() {
+  // Build: { category: { groupLabel: [gf, ...] } }
+  var cats = {};
+  geofenceData.forEach(function(gf) {
+    var cat   = gfCategory(gf);
+    var grp   = gfGroup(gf);
+    if (!cats[cat]) cats[cat] = {};
+    if (!cats[cat][grp]) cats[cat][grp] = [];
+    cats[cat][grp].push(gf);
+  });
+
+  var html = '';
+  Object.keys(cats).sort().forEach(function(cat, ci) {
+    if (ci > 0) html += '<div class="gf-sep"></div>';
+    html += '<div class="gf-category">' + cat + '</div>';
+    Object.keys(cats[cat]).sort().forEach(function(grp) {
+      var members = cats[cat][grp];
+      var color   = (members[0].attributes && members[0].attributes.color) || '#2ecc71';
+      var ids     = members.map(function(g) { return g.id; });
+      var allOn   = ids.every(function(id) { return !!activeGf[id]; });
+      var grpKey  = 'g' + ids.join('_');
+      html += '<div class="gf-item" onclick="toggleGfGroup(' + JSON.stringify(ids) + ')" id="gfi-' + grpKey + '">' +
+        '<span class="gf-dot" style="background:' + color + '"></span>' +
+        '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + grp + '</span>' +
+        '<span class="gf-check' + (allOn ? ' on' : '') + '" id="gfc-' + grpKey + '">' + (allOn ? '✓' : '') + '</span>' +
+      '</div>';
+    });
+  });
+  document.getElementById('gf-picker').innerHTML = html;
+}
+
+function _setGfOn(id, on) {
+  activeGf[id] = on;
+  if (on) {
+    if (!geofenceLayers[id]) geofenceLayers[id] = buildGfLayer(geofenceData.find(function(g){return g.id===id;}));
+    if (geofenceLayers[id]) geofenceLayers[id].addTo(map);
+  } else {
+    if (geofenceLayers[id]) map.removeLayer(geofenceLayers[id]);
+  }
+}
+
+function toggleGfGroup(ids) {
+  var allOn = ids.every(function(id) { return !!activeGf[id]; });
+  ids.forEach(function(id) { _setGfOn(id, !allOn); });
+  // update check indicator
+  var grpKey = 'g' + ids.join('_');
+  var chk = document.getElementById('gfc-' + grpKey);
+  var nowOn = !allOn;
+  if (chk) { chk.className = 'gf-check' + (nowOn ? ' on' : ''); chk.textContent = nowOn ? '✓' : ''; }
+  var anyOn = Object.values(activeGf).some(Boolean);
+  document.getElementById('btn-geofences').classList.toggle('active', anyOn);
+}
+
+async function toggleGfPicker() {
+  var el = document.getElementById('gf-picker');
+  if (el.classList.contains('open')) { closeGfPicker(); return; }
+  if (!geofenceData) {
+    try {
+      var r = await fetch(API + '/geofences');
+      geofenceData = await r.json();
+    } catch(e) { console.error('geofences:', e); return; }
+  }
+  buildGfPicker();
+  el.classList.add('open');
+  document.getElementById('btn-geofences').classList.add('active');
+  setTimeout(function() { document.addEventListener('click', _gfOutsideClick); }, 0);
+}
+
+function closeGfPicker() {
+  document.getElementById('gf-picker').classList.remove('open');
+  var anyOn = Object.values(activeGf).some(Boolean);
+  document.getElementById('btn-geofences').classList.toggle('active', anyOn);
+  document.removeEventListener('click', _gfOutsideClick);
+}
+
+function _gfOutsideClick(e) {
+  var picker = document.getElementById('gf-picker');
+  var btn    = document.getElementById('btn-geofences');
+  if (!picker.contains(e.target) && e.target !== btn) closeGfPicker();
+}
+
+function parseWktPolygon(wkt) {
+  // Traccar uses "lat lon" order (not standard WKT lon lat)
+  var m = wkt.match(/POLYGON\s*\(\(([^)]+)\)/i);
+  if (!m) return null;
+  return m[1].trim().split(',').map(function(pair) {
+    var p = pair.trim().split(/\s+/);
+    return [parseFloat(p[0]), parseFloat(p[1])]; // already [lat, lon]
+  });
+}
+
+function parseWktCircle(wkt) {
+  // CIRCLE (lat lon, radius) — Traccar lat lon order
+  var m = wkt.match(/CIRCLE\s*\(\s*([\d.+-]+)\s+([\d.+-]+)\s*,\s*([\d.]+)\s*\)/i);
+  if (!m) return null;
+  return { latlng: [parseFloat(m[1]), parseFloat(m[2])], radius: parseFloat(m[3]) };
+}
+
+
+map.on('zoomend', updateRings);
+
+// Long-press → fastighetsbeteckning
+var _pressTimer = null;
+var _pressPopup = null;
+
+function _cancelPress() {
+  if (_pressTimer) { clearTimeout(_pressTimer); _pressTimer = null; }
+}
+
+function _onLongPress(latlng) {
+  if (_pressPopup) { map.closePopup(_pressPopup); _pressPopup = null; }
+  _pressPopup = L.popup({ closeButton: true, className: 'fastighet-popup' })
+    .setLatLng(latlng)
+    .setContent('<span style="color:#9fba9f;font-size:11px">Söker fastighet…</span>')
+    .openOn(map);
+
+  fetch(BASE + '/granser/query?lat=' + latlng.lat + '&lon=' + latlng.lng)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (_pressPopup) {
+        _pressPopup.setContent(
+          data.beteckning
+            ? '<b style="font-size:14px">' + data.beteckning + '</b>'
+            : '<span style="color:#9fba9f;font-size:12px">Ingen fastighet här</span>'
+        );
+      }
+    })
+    .catch(function() {
+      if (_pressPopup) _pressPopup.setContent('<span style="color:#e74c3c;font-size:12px">Fel vid sökning</span>');
+    });
+}
+
+map.on('mousedown', function(e) {
+  _cancelPress();
+  _pressTimer = setTimeout(function() { _onLongPress(e.latlng); }, 600);
+});
+map.on('mouseup mousemove', _cancelPress);
+
+map.on('touchstart', function(e) {
+  _cancelPress();
+  var latlng = e.latlng;
+  _pressTimer = setTimeout(function() { _onLongPress(latlng); }, 600);
+}, { passive: true });
+map.on('touchend touchmove', _cancelPress);
+
+init();
+</script>
+</body>
+</html>
