@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import time
 import yaml
 from ant_listener import start as ant_start, dump as ant_dump
 from traccar_client import send_position
@@ -32,8 +33,26 @@ def main():
     device_id = config["ant"].get("device_id", 0)
 
     last_state = {}
+    last_sent = {}
+    # ANT+ delivers ~8 fixes/s; that's far more than Traccar needs and would
+    # flood the WAN link. Throttle to one send per device per interval, but
+    # never throttle a situation change (Treed/Pointed alarms must fire at once).
+    MIN_SEND_INTERVAL = 1.5
 
     def on_position(data):
+        dev = data["device_id"]
+        prev = last_state.get(dev, {})
+        situation = data["situation"]
+        low = data.get("low_battery") or data.get("battery_status") == "Critical"
+        changed = prev.get("situation") != situation or (low and not prev.get("low"))
+
+        last_state[dev] = {"situation": situation, "low": low}
+
+        now = time.time()
+        if not changed and (now - last_sent.get(dev, 0)) < MIN_SEND_INTERVAL:
+            return
+        last_sent[dev] = now
+
         logger.info("Dog '%s' [%s]: %.6f, %.6f  %s  bat=%s",
                     data["name"], data["device_id"],
                     data["lat"], data["lon"], data["situation"],
@@ -41,6 +60,9 @@ def main():
         extras = {
             "bearing": round(data["bearing"]),
             "altitude": 0,
+            # Mättidpunkt så Traccar ordnar spåret på fix-tid, inte ankomsttid.
+            # Utan detta ger WAN-retries/omordning kryssande linjer på kartan.
+            "timestamp": int(time.time()),
         }
         if data.get("battery_voltage") is not None:
             extras["batt"] = data["battery_voltage"]
@@ -52,17 +74,10 @@ def main():
 
         # Alarm only on state transitions so Traccar notifications fire once,
         # not on every position update
-        dev = data["device_id"]
-        prev = last_state.get(dev, {})
-        situation = data["situation"]
-        low = data.get("low_battery") or data.get("battery_status") == "Critical"
-
         if situation in ("Treed", "Pointed") and prev.get("situation") != situation:
             extras["alarm"] = situation.lower()
         elif low and not prev.get("low"):
             extras["alarm"] = "lowBattery"
-
-        last_state[dev] = {"situation": situation, "low": low}
 
         send_position(traccar_url, data["device_id"], data["lat"], data["lon"], extras)
 

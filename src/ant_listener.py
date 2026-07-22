@@ -44,9 +44,38 @@ def _update_name(asset_id):
             logger.info("Dog %d name: %s", asset_id, name)
 
 
-def _on_data(data, on_position):
+# Identification pages (0x10/0x11, carrying the Garmin dog name) are only sent by
+# the Alpha in response to a data-request page (0x46). Without asking we never see
+# the name and stay stuck on "Dog N". Payload requests page 0x10, 4 times.
+_REQUEST_ID_PAYLOAD = [0x46, 0xFF, 0xFF, 0xFF, 0xFF, 0x04, 0x10, 0x04]
+
+
+def _maybe_request_name(channel, asset_id):
+    if channel is None or sync_buffer.get(str(asset_id) + "_name"):
+        return
+    now = time.time()
+    if now - sync_buffer.get(str(asset_id) + "_name_req", 0) < 5:
+        return
+    sync_buffer[str(asset_id) + "_name_req"] = now
+    try:
+        channel.send_acknowledged_data(_REQUEST_ID_PAYLOAD)
+        logger.debug("Requested identification for asset %d", asset_id)
+    except Exception as exc:
+        logger.debug("Identification request failed: %s", exc)
+
+
+def _on_data(data, on_position, channel=None):
     page = data[0]
     asset_id = int(data[1])
+    # Only the low 5 bits are the asset index; the upper bits differ between
+    # page types (location byte1=0x64→100, identification byte1=0xE4→228, same
+    # dog). Name/identification state is keyed by this masked index so it joins
+    # with the location stream. device_id keeps the raw location byte for a
+    # stable Traccar id. See mikkosh/AntAssetTracker parseAssetIdx (&0x1F).
+    idx = data[1] & 0x1F
+
+    if page in (0x01, 0x02):
+        _maybe_request_name(channel, idx)
 
     if page == 0x01:
         sync_buffer[asset_id] = data
@@ -71,8 +100,12 @@ def _on_data(data, on_position):
             }
 
     elif page == 0x02:
-        if asset_id in sync_buffer:
-            p1 = sync_buffer[asset_id]
+        # Consume the paired page 0x01 so a rebroadcast 0x02 can't re-emit with
+        # a stale latitude low-half. Page 0x02 is broadcast more often than 0x01;
+        # emitting on every 0x02 froze the latitude between 0x01 updates and drew
+        # a right-angle staircase on the map. One position per matched 1:2 pair.
+        p1 = sync_buffer.pop(asset_id, None)
+        if p1 is not None:
             meta = sync_buffer.get(str(asset_id) + "_meta", {})
 
             lat_semi = p1[6] | (p1[7] << 8) | (data[2] << 16) | (data[3] << 24)
@@ -87,7 +120,7 @@ def _on_data(data, on_position):
 
             on_position({
                 "device_id": str(asset_id),
-                "name": sync_buffer.get(str(asset_id) + "_name", "Dog {}".format(asset_id)),
+                "name": sync_buffer.get(str(idx) + "_name", "Dog {}".format(asset_id)),
                 "lat": lat,
                 "lon": lon,
                 "situation": meta.get("situation", "Unknown"),
@@ -101,14 +134,14 @@ def _on_data(data, on_position):
     elif page == 0x10:
         # Asset Identifier page 1: color + first 5 chars of the name set in the Alpha 100
         name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
-        sync_buffer[str(asset_id) + "_name1"] = name_part
-        _update_name(asset_id)
+        sync_buffer[str(idx) + "_name1"] = name_part
+        _update_name(idx)
 
     elif page == 0x11:
         # Asset Identifier page 2: type + last 5 chars of the name
         name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
-        sync_buffer[str(asset_id) + "_name2"] = name_part
-        _update_name(asset_id)
+        sync_buffer[str(idx) + "_name2"] = name_part
+        _update_name(idx)
 
     elif page == 0x52:
         coarse = data[7] & 0x0F
@@ -122,10 +155,14 @@ def _on_data(data, on_position):
 
 def _open_channel(node, device_id, on_position):
     channel = node.new_channel(Channel.Type.BIDIRECTIONAL_RECEIVE)
-    channel.on_broadcast_data = lambda data: _on_data(data, on_position)
-    channel.on_burst_data = lambda data: _on_data(data, on_position)
+    channel.on_broadcast_data = lambda data: _on_data(data, on_position, channel)
+    channel.on_burst_data = lambda data: _on_data(data, on_position, channel)
     channel.on_close = lambda: logger.warning("ANT+ channel closed")
-    channel.set_period(8192)
+    # 2048 = 16 Hz, matches the Asset Tracker master's transmit rate. At 8192
+    # (4 Hz) we downsampled the stream and phase-locked onto page 0x02, so page
+    # 0x01 (latitude low bits) only slipped through ~every 2 min — that starved
+    # the 1:2 pairing and froze the latitude. See mikkosh/AntAssetTracker.
+    channel.set_period(2048)
     channel.set_rf_freq(57)
     channel.set_id(device_id, 41, 0)
     channel.open()
@@ -172,7 +209,7 @@ def dump():
     node.set_network_key(0x00, NETWORK_KEY)
     channel = node.new_channel(Channel.Type.BIDIRECTIONAL_RECEIVE)
     channel.on_broadcast_data = on_data
-    channel.set_period(8192)
+    channel.set_period(2048)  # 16 Hz — match master rate (see _open_channel)
     channel.set_rf_freq(57)
     channel.set_id(0, 41, 0)
 
