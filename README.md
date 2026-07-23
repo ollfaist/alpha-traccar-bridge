@@ -30,12 +30,22 @@ cp config/config.example.yaml config/config.yaml
 ```
 
 Requires the ANT+ Managed Network Key, licensed under the ANT+ Adopter's
-Agreement (thisisant.com) and not included in this repo. Set it as an
-environment variable before running:
+Agreement and not included in this repo. To get one:
+
+1. Create a free account at [thisisant.com](https://www.thisisant.com) and
+   accept the ANT+ Adopter's Agreement.
+2. Under your account's developer/download area, request the **ANT+ Managed
+   Network Key**. It's issued as 8 bytes (16 hex characters).
+3. Set it as an environment variable before running (locally, or via
+   `Environment=` in the systemd unit on the Pi):
 
 ```bash
 export ANT_NETWORK_KEY=XXXXXXXXXXXXXXXX  # 16 hex chars from your Adopter account
 ```
+
+The key must never be committed to this repo — it's licensed to your
+Adopter account, not free to redistribute (see the Adopter's Agreement,
+section on not distributing ANT+ Documents/Design Tools to third parties).
 
 ## Running
 
