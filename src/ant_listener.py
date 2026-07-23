@@ -2,17 +2,26 @@
 ANT+ listener for Garmin Alpha 100 dog tracking data.
 
 Protocol verified against live Alpha 100 hardware.
-Network key and byte layout confirmed via raw capture session.
+Byte layout confirmed via raw capture session and the ANT+ Tracker Device Profile.
 """
 
 import logging
+import os
 import time
 from openant.easy.node import Node
 from openant.easy.channel import Channel
 
 logger = logging.getLogger(__name__)
 
-NETWORK_KEY = [***REMOVED-ANT-NETWORK-KEY***]
+# ANT+ Managed Network Key — licensed under the ANT+ Adopter's Agreement, must
+# not be committed to source. Set via env var; get your own from thisisant.com.
+_NETWORK_KEY_HEX = os.environ.get("ANT_NETWORK_KEY", "")
+if not _NETWORK_KEY_HEX:
+    raise RuntimeError(
+        "ANT_NETWORK_KEY env var not set. Provide the ANT+ Managed Network Key "
+        "as 16 hex chars, e.g. ANT_NETWORK_KEY=XXXXXXXXXXXXXXXX"
+    )
+NETWORK_KEY = [int(_NETWORK_KEY_HEX[i:i + 2], 16) for i in range(0, 16, 2)]
 
 SITUATIONS = {
     0: "Sitting",

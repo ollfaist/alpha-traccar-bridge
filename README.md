@@ -29,6 +29,14 @@ cp config/config.example.yaml config/config.yaml
 # Edit config/config.yaml with your Traccar URL
 ```
 
+Requires the ANT+ Managed Network Key, licensed under the ANT+ Adopter's
+Agreement (thisisant.com) and not included in this repo. Set it as an
+environment variable before running:
+
+```bash
+export ANT_NETWORK_KEY=XXXXXXXXXXXXXXXX  # 16 hex chars from your Adopter account
+```
+
 ## Running
 
 ```bash
