@@ -198,15 +198,30 @@ def _on_data(data, on_position, channel=None):
         # Common page 82 = the *transmitting device's* battery, i.e. the Alpha 100
         # handheld — not a collar. The profile lists asset index as present only in
         # pages 1, 2, 16 and 17, so this page cannot describe an individual dog.
-        # Kept because the handheld dying takes the whole chain down, but it is
-        # deliberately not attached to any dog's position.
+        # Not attached to any dog's position, but reported here because the
+        # handheld going flat is the one failure that blacks out every dog at
+        # once — a collar dying only loses that collar.
         coarse = data[7] & 0x0F
         fractional = data[6] / 256.0
         voltage = round(coarse + fractional, 2)
         status = BATTERY_STATUS.get((data[7] >> 4) & 0x07, "Unknown")
+        previous = sync_buffer.get("handheld_battery_status")
         sync_buffer["handheld_battery_voltage"] = voltage
         sync_buffer["handheld_battery_status"] = status
-        logger.debug("Handheld (Alpha 100) battery: %.2fV (%s)", voltage, status)
+        if status != previous:
+            report = logger.warning if status in ("Low", "Critical") else logger.info
+            report("Handheld (Alpha 100) battery: %.2fV (%s)", voltage, status)
+        else:
+            logger.debug("Handheld (Alpha 100) battery: %.2fV (%s)", voltage, status)
+
+
+def handheld_battery():
+    """Alpha 100 battery as (voltage, status); (None, None) until page 0x52 arrives.
+
+    This is the handheld's own battery, never a collar's — see the 0x52 handler.
+    """
+    return (sync_buffer.get("handheld_battery_voltage"),
+            sync_buffer.get("handheld_battery_status"))
 
 
 def _open_channel(node, device_id, on_position):
