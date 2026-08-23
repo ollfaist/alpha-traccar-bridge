@@ -136,8 +136,6 @@ def _on_data(data, on_position, channel=None):
                 "distance": meta.get("distance", 0),
                 "bearing": meta.get("bearing", 0.0),
                 "low_battery": meta.get("low_battery", False),
-                "battery_voltage": sync_buffer.get("collar_battery_voltage"),
-                "battery_status": sync_buffer.get("collar_battery_status"),
             })
 
     elif page == 0x10:
@@ -153,13 +151,18 @@ def _on_data(data, on_position, channel=None):
         _update_name(idx)
 
     elif page == 0x52:
+        # Common page 82 = the *transmitting device's* battery, i.e. the Alpha 100
+        # handheld — not a collar. The profile lists asset index as present only in
+        # pages 1, 2, 16 and 17, so this page cannot describe an individual dog.
+        # Kept because the handheld dying takes the whole chain down, but it is
+        # deliberately not attached to any dog's position.
         coarse = data[7] & 0x0F
         fractional = data[6] / 256.0
         voltage = round(coarse + fractional, 2)
         status = BATTERY_STATUS.get((data[7] >> 4) & 0x07, "Unknown")
-        sync_buffer["collar_battery_voltage"] = voltage
-        sync_buffer["collar_battery_status"] = status
-        logger.debug("Collar battery: %.2fV (%s)", voltage, status)
+        sync_buffer["handheld_battery_voltage"] = voltage
+        sync_buffer["handheld_battery_status"] = status
+        logger.debug("Handheld (Alpha 100) battery: %.2fV (%s)", voltage, status)
 
 
 def _open_channel(node, device_id, on_position):

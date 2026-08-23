@@ -43,7 +43,10 @@ def main():
         dev = data["device_id"]
         prev = last_state.get(dev, {})
         situation = data["situation"]
-        low = data.get("low_battery") or data.get("battery_status") == "Critical"
+        # The dog's own low-battery bit (page 0x01) — the only per-asset battery
+        # signal the profile has. Handheld battery (page 0x52) must not feed this:
+        # it carries no asset index, so it would alarm on every dog at once.
+        low = bool(data.get("low_battery"))
         changed = prev.get("situation") != situation or (low and not prev.get("low"))
 
         last_state[dev] = {"situation": situation, "low": low}
@@ -53,22 +56,21 @@ def main():
             return
         last_sent[dev] = now
 
-        logger.info("Dog '%s' [%s]: %.6f, %.6f  %s  bat=%s",
+        logger.info("Dog '%s' [%s]: %.6f, %.6f  %s  dist=%dm%s",
                     data["name"], data["device_id"],
                     data["lat"], data["lon"], data["situation"],
-                    data.get("battery_voltage", "?"))
+                    data["distance"], "  LOW BAT" if low else "")
         extras = {
             "bearing": round(data["bearing"]),
             "altitude": 0,
             # Mättidpunkt så Traccar ordnar spåret på fix-tid, inte ankomsttid.
             # Utan detta ger WAN-retries/omordning kryssande linjer på kartan.
             "timestamp": int(time.time()),
+            # No "batt": page 0x52 reports the *handheld's* battery, not the
+            # collar's, so sending it here labelled every dog with the Alpha's
+            # charge. The collar exposes only the low_battery bit, sent as an alarm.
+            "event": "{} dist={}m".format(data["situation"], data["distance"]),
         }
-        if data.get("battery_voltage") is not None:
-            extras["batt"] = data["battery_voltage"]
-        if data.get("battery_status"):
-            extras["event"] = "{} dist={}m {}".format(
-                data["situation"], data["distance"], data["battery_status"])
         if not data["name"].startswith("Dog "):
             extras["dogName"] = data["name"]
 
