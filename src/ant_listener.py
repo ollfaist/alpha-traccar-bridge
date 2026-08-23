@@ -7,6 +7,7 @@ Byte layout confirmed via raw capture session and the ANT+ Tracker Device Profil
 
 import logging
 import os
+import threading
 import time
 from openant.easy.node import Node
 from openant.easy.channel import Channel
@@ -46,31 +47,70 @@ def _semi_to_deg(semi):
 def _update_name(asset_id):
     p1 = sync_buffer.get(str(asset_id) + "_name1")
     p2 = sync_buffer.get(str(asset_id) + "_name2")
-    if p1 is not None and p2 is not None:
-        name = (p1 + p2).strip()
-        if name and sync_buffer.get(str(asset_id) + "_name") != name:
-            sync_buffer[str(asset_id) + "_name"] = name
-            logger.info("Dog %d name: %s", asset_id, name)
+    if p1 is None or p2 is None:
+        return
+    # Both identification pages seen. Mark it resolved even when the name is
+    # blank, or an unnamed dog would keep the request loop running forever.
+    sync_buffer[str(asset_id) + "_name_done"] = True
+    name = (p1 + p2).strip()
+    if name and sync_buffer.get(str(asset_id) + "_name") != name:
+        sync_buffer[str(asset_id) + "_name"] = name
+        logger.info("Dog %d name: %s", asset_id, name)
 
 
 # Identification pages (0x10/0x11, carrying the Garmin dog name) are only sent by
 # the Alpha in response to a data-request page (0x46). Without asking we never see
-# the name and stay stuck on "Dog N". Payload requests page 0x10, 4 times.
+# the name and stay stuck on "Dog N". Command type 4 requests the identification
+# set for every asset, so one request covers all pending dogs.
 _REQUEST_ID_PAYLOAD = [0x46, 0xFF, 0xFF, 0xFF, 0xFF, 0x04, 0x10, 0x04]
+_NAME_REQUEST_INTERVAL = 5
+
+_pending_names = set()
+_pending_lock = threading.Lock()
+_name_thread = None
+_active_channel = None
 
 
-def _maybe_request_name(channel, asset_id):
-    if channel is None or sync_buffer.get(str(asset_id) + "_name"):
+def _maybe_request_name(channel, idx):
+    """Mark an asset as needing identification. Deliberately does not send.
+
+    send_acknowledged_data() waits for a transfer event with no overall timeout,
+    so calling it here — on the ANT+ dispatch thread — hangs all decoding
+    indefinitely if the handheld goes out of range mid-transfer. The actual send
+    happens on _name_request_loop instead.
+    """
+    if channel is None or sync_buffer.get(str(idx) + "_name_done"):
         return
-    now = time.time()
-    if now - sync_buffer.get(str(asset_id) + "_name_req", 0) < 5:
-        return
-    sync_buffer[str(asset_id) + "_name_req"] = now
-    try:
-        channel.send_acknowledged_data(_REQUEST_ID_PAYLOAD)
-        logger.debug("Requested identification for asset %d", asset_id)
-    except Exception as exc:
-        logger.debug("Identification request failed: %s", exc)
+    with _pending_lock:
+        _pending_names.add(idx)
+
+
+def _name_request_loop():
+    while True:
+        time.sleep(_NAME_REQUEST_INTERVAL)
+        channel = _active_channel
+        if channel is None:
+            continue
+        with _pending_lock:
+            _pending_names.difference_update(
+                {i for i in _pending_names if sync_buffer.get(str(i) + "_name_done")}
+            )
+            pending = sorted(_pending_names)
+        if not pending:
+            continue
+        try:
+            channel.send_acknowledged_data(_REQUEST_ID_PAYLOAD)
+            logger.debug("Requested identification, pending assets: %s", pending)
+        except Exception as exc:
+            logger.debug("Identification request failed: %s", exc)
+
+
+def _ensure_name_thread():
+    global _name_thread
+    if _name_thread is None or not _name_thread.is_alive():
+        _name_thread = threading.Thread(
+            target=_name_request_loop, name="ant-name-request", daemon=True)
+        _name_thread.start()
 
 
 def _on_data(data, on_position, channel=None):
@@ -140,13 +180,17 @@ def _on_data(data, on_position, channel=None):
 
     elif page == 0x10:
         # Asset Identifier page 1: color + first 5 chars of the name set in the Alpha 100
-        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
+        # Strip only the null padding: a space here can be a real character at
+        # the 5/6 boundary ("Bella Boo"), and _update_name trims the join.
+        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00")
         sync_buffer[str(idx) + "_name1"] = name_part
         _update_name(idx)
 
     elif page == 0x11:
         # Asset Identifier page 2: type + last 5 chars of the name
-        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00 ")
+        # Strip only the null padding: a space here can be a real character at
+        # the 5/6 boundary ("Bella Boo"), and _update_name trims the join.
+        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00")
         sync_buffer[str(idx) + "_name2"] = name_part
         _update_name(idx)
 
@@ -178,6 +222,9 @@ def _open_channel(node, device_id, on_position):
     channel.set_rf_freq(57)
     channel.set_id(device_id, 41, 0)
     channel.open()
+    global _active_channel
+    _active_channel = channel
+    _ensure_name_thread()
     logger.info("ANT+ channel open — listening for Alpha 100")
     return channel
 
@@ -187,9 +234,19 @@ def start(device_id: int, on_position, reconnect_delay: int = 5):
 
     Automatically reconnects if the ANT+ node drops.
     """
+    global _active_channel
     while True:
         node = None
         try:
+            # Drop all per-asset state before reconnecting. A page 0x01 left over
+            # from before the drop would pair with the first page 0x02 after it,
+            # assembling a latitude from two different fixes — the exact
+            # right-angle staircase the 1:2 pairing was added to remove.
+            _active_channel = None
+            sync_buffer.clear()
+            with _pending_lock:
+                _pending_names.clear()
+
             node = Node()
             node.set_network_key(0x00, NETWORK_KEY)
             _open_channel(node, device_id, on_position)
