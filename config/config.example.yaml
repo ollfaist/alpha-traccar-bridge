@@ -3,3 +3,13 @@ ant:
 
 traccar:
   url: http://192.168.1.x:5055  # OsmAnd port on your Traccar server
+
+  # Valfritt: låter bryggan själv skapa nya halsband i Traccar första gången
+  # de dyker upp (och döpa om dem när Garmin-namnet väl lästs in), istället
+  # för att man måste lägga till dem manuellt via Traccars gränssnitt/API.
+  # Peka mot Traccars LAN-adress (admin-API:et, inte OsmAnd-porten). Utelämna
+  # hela blocket för att stänga av — bryggan fungerar precis som förut då.
+  admin:
+    url: http://192.168.1.x:8190
+    user: din-traccar-inloggning
+    password: ditt-losenord

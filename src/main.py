@@ -53,6 +53,18 @@ def main():
     traccar_url = config["traccar"]["url"]
     device_id = config["ant"].get("device_id", 0)
 
+    # Admin-API:et (för att auto-registrera nya halsband) är separat från
+    # OsmAnd-adressen ovan — kräver inloggning, och pekar mot Traccars
+    # LAN-adress istället för den publika, så det inte beror på att
+    # portforwarding/NAT-loopback fungerar för just den här funktionen.
+    admin_cfg = config["traccar"].get("admin") or {}
+    admin = None
+    if admin_cfg.get("url") and admin_cfg.get("user") and admin_cfg.get("password"):
+        admin = {"url": admin_cfg["url"], "auth": (admin_cfg["user"], admin_cfg["password"])}
+    else:
+        logger.warning("Ingen traccar.admin i config.yaml — nya halsband måste "
+                        "fortfarande läggas till manuellt i Traccar.")
+
     last_state = {}
     last_sent = {}
     # ANT+ delivers ~8 fixes/s; that's far more than Traccar needs and would
@@ -109,7 +121,7 @@ def main():
         if alarm:
             extras["alarm"] = alarm
 
-        send_position(traccar_url, data["device_id"], data["lat"], data["lon"], extras)
+        send_position(traccar_url, data["device_id"], data["lat"], data["lon"], extras, admin=admin)
 
     logger.info("Starting — device_id=%s", device_id)
     ant_start(device_id, on_position)
