@@ -31,6 +31,12 @@ EOF
 systemd-tmpfiles --create --prefix /var/log/journal
 systemctl restart systemd-journald
 
+# En omstart av journald räcker inte: den fortsätter skriva i /run tills
+# journalen flyttas över. Vid varje boot gör systemd-journal-flush.service
+# detta automatiskt, men första gången får vi göra det själva.
+journalctl --flush
+journalctl --sync
+
 echo "Klart. Journalen ligger nu i /var/log/journal och överlever omstart:"
 journalctl --list-boots 2>/dev/null | tail -3
 du -sh /var/log/journal
