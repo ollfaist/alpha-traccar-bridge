@@ -3,10 +3,16 @@
 
 Kör: python tests/test_registrering.py
 
-Fallen kommer alla från verkliga fel: hunden som försvann när Alphas lista
-numrerades om, platshållaren som aldrig fick sitt riktiga namn, registreringen
-som tyst misslyckades när bryggan stod utanför hemmanätet, och enheten laget
-själv döpt om i Traccar.
+Två saker kan ändras i Alphan mellan två jakter, och de drar åt olika håll:
+
+  * Lägger man till eller tar bort ett halsband numreras hundlistan om, och
+    samma hund kommer in under ett nytt platsnummer. Då är namnet det stabila.
+  * Döper man om en hund i handenheten byter den namn men behåller platsen.
+    Då är platsnumret det stabila.
+
+Därför söks hunden först på namnet och sedan på platsen. Undantaget är Alphans
+egna autonamn ("Hundar 3"), som återanvänds till nästa hund man lägger till —
+de identifierar ingenting och får bara matcha på plats.
 """
 import json
 import os
@@ -59,9 +65,8 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         kropp = json.loads(self.rfile.read(n) or b"{}")
         LOGG.append(("PUT", kropp))
-        krock = any(d["id"] != kropp["id"] and str(d["uniqueId"]) == str(kropp["uniqueId"])
-                    for d in DEVICES)
-        if krock:
+        if any(d["id"] != kropp["id"] and str(d["uniqueId"]) == str(kropp["uniqueId"])
+               for d in DEVICES):
             return self._svara(400, {"error": "duplicate uniqueId"})
         for d in DEVICES:
             if d["id"] == kropp["id"]:
@@ -90,6 +95,11 @@ def nollstall():
     LOGG.clear()
 
 
+def enhet(nr, namn, uid, garmin=None):
+    attrs = {"garminName": garmin} if garmin else {}
+    return {"id": nr, "name": namn, "uniqueId": uid, "attributes": attrs}
+
+
 def skicka(device_id, namn=None):
     extras = {"dogName": namn} if namn else {}
     tc._deliver(BAS + "/", device_id, 63.27, 13.34, extras, admin=ADMIN)
@@ -112,17 +122,20 @@ def kolla(vad, faktiskt, forvantat):
         print("   [OK] %s: %r" % (vad, faktiskt))
 
 
-def unikt(namn):
+def platsen(namn):
     return [d["uniqueId"] for d in DEVICES if d["name"] == namn]
 
 
-# --- 1: känd hund som bytt platsnummer ------------------------------------
-DEVICES[:] = [{"id": 1, "name": "Sampo", "uniqueId": "105", "attributes": {}},
-              {"id": 2, "name": "Etsa", "uniqueId": "100", "attributes": {}}]
+def namnet(uid):
+    return [d["name"] for d in DEVICES if d["uniqueId"] == uid]
+
+
+# --- 1: namngiven hund som bytt platsnummer -------------------------------
+DEVICES[:] = [enhet(1, "Sampo", "105"), enhet(2, "Etsa", "100")]
 nollstall()
 skicka("98", "Sampo")
 visa("1) Sampo dyker upp som 98 (var 105)")
-kolla("Sampo flyttad till 98", unikt("Sampo"), ["98"])
+kolla("Sampo flyttad till 98", platsen("Sampo"), ["98"])
 kolla("ingen ny enhet", len(DEVICES), 2)
 kolla("reservadressen användes", tc._admin_ok_url, BAS)
 
@@ -130,9 +143,7 @@ kolla("reservadressen användes", tc._admin_ok_url, BAS)
 nollstall()
 skicka("99", "Rex")
 visa("2) Okänd hund 'Rex' som 99")
-kolla("ny enhet skapad", unikt("Rex"), ["99"])
-kolla("kopplingen satt direkt",
-      (DEVICES[-1].get("attributes") or {}).get("garminName"), "Rex")
+kolla("ny enhet skapad", platsen("Rex"), ["99"])
 
 # --- 3: namnlöst halsband inom fristen ------------------------------------
 nollstall()
@@ -145,17 +156,17 @@ kolla("inget skapat än", len(DEVICES), innan)
 tc._first_seen["97"] = time.time() - tc._NAME_GRACE - 1
 skicka("97")
 visa("4) Samma halsband när fristen gått ut")
-kolla("platshållare skapad", unikt("Ny hund 97"), ["97"])
+kolla("platshållare skapad", namnet("97"), ["Ny hund 97"])
 
 # --- 5: Garmin-namnet kommer in efteråt -----------------------------------
 nollstall()
 innan = len(DEVICES)
 skicka("97", "Bella")
 visa("5) Garmin-namnet 'Bella' kommer in för 97")
-kolla("platshållaren döptes om", unikt("Bella"), ["97"])
+kolla("platshållaren döptes om", namnet("97"), ["Bella"])
 kolla("ingen dubblett", len(DEVICES), innan)
 
-# --- 6: känt halsband — en koll, sedan tyst -------------------------------
+# --- 6: känt halsband — en uppslagning, sedan tyst ------------------------
 nollstall()
 skicka("98", "Sampo")
 forsta = [l[0] for l in LOGG if l[0] in ("GET", "PUT", "POST")]
@@ -164,56 +175,64 @@ for _ in range(5):
     skicka("98", "Sampo")
 sedan = [l[0] for l in LOGG if l[0] in ("GET", "PUT", "POST")]
 visa("6) Sampo skickar på sitt kända id 98")
-# Kopplingen sattes redan i fall 1, så här räcker en uppslagning.
 kolla("en uppslagning första positionen", forsta, ["GET"])
 kolla("inga anrop för de fem följande", sedan, [])
 
 # --- 7: två hundar byter plats med varandra -------------------------------
-DEVICES[:] = [{"id": 1, "name": "Sampo", "uniqueId": "98", "attributes": {}},
-              {"id": 2, "name": "Etsa", "uniqueId": "100", "attributes": {}}]
+DEVICES[:] = [enhet(1, "Sampo", "98", "Sampo"), enhet(2, "Etsa", "100", "Etsa")]
 nollstall()
 skicka("100", "Sampo")        # blockerad av Etsa
 skicka("98", "Etsa")          # blockerad av Sampo
 tc._registered_names.clear()
 skicka("100", "Sampo")
 visa("7) Sampo och Etsa har bytt plats i listan")
-kolla("Sampo på 100", unikt("Sampo"), ["100"])
-kolla("Etsa på 98", unikt("Etsa"), ["98"])
+kolla("Sampo på 100", platsen("Sampo"), ["100"])
+kolla("Etsa på 98", platsen("Etsa"), ["98"])
 kolla("fortfarande två enheter", len(DEVICES), 2)
 
-# --- 8: laget har döpt om enheten i Traccar -------------------------------
-# Halsbandet heter "Hundar 8" i handenheten, men laget vill se "Sampo" på
-# kartan. Namnet är deras — bryggan får bara komma ihåg kopplingen.
-DEVICES[:] = [{"id": 1, "name": "Sampo", "uniqueId": "105", "attributes": {}}]
+# --- 8: hunden har döpts om i Alphan --------------------------------------
+# Samma plats, nytt namn. Traccar ska visa det Alphan visar.
+DEVICES[:] = [enhet(1, "Sampo", "105", "Sampo")]
+nollstall()
+skicka("105", "Rocky")
+visa("8) 'Sampo' har döpts om till 'Rocky' i handenheten")
+kolla("namnet följer med", namnet("105"), ["Rocky"])
+kolla("ingen ny enhet", len(DEVICES), 1)
+kolla("kopplingen uppdaterad",
+      (DEVICES[0].get("attributes") or {}).get("garminName"), "Rocky")
+
+# --- 9: autonamn speglas också -------------------------------------------
+# "Hundar 8" är Alphans egen uppräkning. Namnet ska ändå synas i Traccar —
+# laget vill se samma sak på båda ställena.
+DEVICES[:] = [enhet(1, "Sampo", "105")]
 nollstall()
 skicka("105", "Hundar 8")
-visa("8a) Halsbandet 'Hundar 8' skickar på Sampos id")
-kolla("namnet orört", DEVICES[0]["name"], "Sampo")
-kolla("kopplingen sparad",
-      (DEVICES[0].get("attributes") or {}).get("garminName"), "Hundar 8")
+visa("9) Halsbandet heter 'Hundar 8' i Alphan")
+kolla("Traccar visar samma namn", namnet("105"), ["Hundar 8"])
 
+# --- 10: autonamn identifierar INTE över platsbyte ------------------------
+# Tar man bort en hund återanvänder Alphan "Hundar 8" till nästa. Matchade vi
+# på det namnet hade den nya hunden ärvt den gamlas enhet och spår.
 nollstall()
 skicka("99", "Hundar 8")
-visa("8b) Listan numreras om — halsbandet kommer in som 99")
-kolla("samma enhet flyttad", unikt("Sampo"), ["99"])
-kolla("ingen ny enhet", len(DEVICES), 1)
+visa("10) Ett annat halsband kommer in som 'Hundar 8' på plats 99")
+kolla("den gamla enheten orörd", namnet("105"), ["Hundar 8"])
+kolla("egen enhet för den nya", namnet("99"), ["Hundar 8"])
+kolla("två enheter", len(DEVICES), 2)
 
-# --- 8c: en hund som heter samma sak som en jägare ------------------------
-# Namnreserven får inte kapa en jägares enhet. Jägarna har jakt-<namn> eller
-# ett långt id; halsbanden ligger på 96 och uppåt.
-DEVICES[:] = [{"id": 1, "name": "Olle", "uniqueId": "19890605", "attributes": {}},
-              {"id": 2, "name": "Joel", "uniqueId": "jakt-joel", "attributes": {}}]
+# --- 11: en hund som heter samma sak som en jägare ------------------------
+DEVICES[:] = [enhet(1, "Olle", "19890605"), enhet(2, "Joel", "jakt-joel")]
 nollstall()
 skicka("98", "Olle")
-visa("8c) Halsband som heter 'Olle' — samma som en jägare")
+visa("11) Halsband som heter 'Olle' — samma som en jägare")
 kolla("jägarens enhet orörd", [d["uniqueId"] for d in DEVICES if d["id"] == 1], ["19890605"])
 kolla("eget halsband skapat", [d["uniqueId"] for d in DEVICES if d["id"] == 3], ["98"])
 
-# --- 9: ingen admin-adress svarar — bryggan får inte proppa kön -----------
+# --- 12: ingen admin-adress svarar — bryggan får inte proppa kön ----------
 # I skogen kan varken LAN-adressen eller den publika nås. Uppslagningen görs
-# numera även när positionen gick fram, så utan paus hade varje position
-# kostat en timeout per adress på sändartråden och köat upp resten bakom sig.
-DEVICES[:] = [{"id": 1, "name": "Sampo", "uniqueId": "105", "attributes": {}}]
+# även när positionen gick fram, så utan paus hade varje position kostat en
+# timeout per adress på sändartråden och köat upp resten bakom sig.
+DEVICES[:] = [enhet(1, "Sampo", "105", "Sampo")]
 nollstall()
 forsok = []
 riktig = tc._admin_request
@@ -227,10 +246,10 @@ def _dod_admin(admin, method, path, **kw):
 tc._admin_request = _dod_admin
 try:
     for _ in range(4):
-        tc._deliver(BAS + "/", "105", 63.27, 13.34, {"dogName": "Hundar 8"}, admin=ADMIN)
+        skicka("105", "Rocky")
 finally:
     tc._admin_request = riktig
-print("\n9) Ingen admin-adress svarar")
+print("\n12) Ingen admin-adress svarar")
 kolla("pausen är satt", tc._admin_nasta_forsok > time.time(), True)
 kolla("bara ett försök på fyra positioner", len(forsok), 1)
 nollstall()

@@ -10,6 +10,7 @@ is exactly what happens when the WAN link is flaky in the forest.
 
 import logging
 import queue
+import re
 import threading
 import time
 
@@ -113,10 +114,23 @@ def _garmin_namn(d):
     return ((d.get("attributes") or {}).get("garminName") or "").strip().lower()
 
 
+# Alphan döper nya halsband till "Hundar", "Hundar 1", "Hundar 2" — bara en
+# uppräkning. Tar man bort en hund återanvänds namnet till nästa. Ett sådant
+# namn säger alltså ingenting om VILKEN hund det är, och får inte användas för
+# att känna igen en hund som bytt plats i listan: då hade den nya hunden ärvt
+# den gamlas Traccar-enhet och deras spår blandats ihop. Ger man hunden ett
+# eget namn i Alphan blir namnet unikt och duger som identitet.
+_AUTONAMN = re.compile(r"^(hundar|hund|dog|dogs)\s*\d*$", re.IGNORECASE)
+
+
+def _ar_autonamn(name):
+    return bool(_AUTONAMN.match((name or "").strip()))
+
+
 def _ar_halsband(d):
     """Om enheten kan vara ett ANT+-halsband. Alphas platsnummer är 96 och
     uppåt, alltså högst tre siffror — jägarnas enheter heter jakt-<namn> eller
-    bär ett långt id. Utan den här spärren hade namnreserven nedan kunnat ta
+    bär ett långt id. Utan den här spärren hade namnsökningen nedan kunnat ta
     över en jägares enhet om en hund råkar heta samma sak i handenheten."""
     if (d.get("attributes") or {}).get("garminParkerad"):
         return True
@@ -125,13 +139,13 @@ def _ar_halsband(d):
 
 
 def _hitta_hund(devices, name):
-    """Enheten som hör till den här hunden.
+    """Hundens enhet, sökt på namnet — för att känna igen den på en ny plats.
 
-    Attributet garminName söks först och visningsnamnet bara som reserv:
-    laget döper om hundarna i Traccar till det de faktiskt heter ("Sampo"),
-    medan halsbandet kan heta något annat i handenheten ("Hundar 8"). Söker vi
-    bara på visningsnamnet tappar vi kopplingen så fort någon döper om enheten.
+    Attributet garminName går före visningsnamnet så kopplingen håller även om
+    enheten hunnit döpas om. Autonamn duger inte som identitet, se _AUTONAMN.
     """
+    if _ar_autonamn(name):
+        return None
     n = name.strip().lower()
     for d in devices:
         if _garmin_namn(d) == n:
@@ -142,19 +156,13 @@ def _hitta_hund(devices, name):
     return None
 
 
-def _stampla(admin, dev, name):
-    """Skriver in vilket Garmin-namn enheten hör till, om det saknas."""
-    if _garmin_namn(dev) == name.strip().lower():
-        return True
-    dev.setdefault("attributes", {})["garminName"] = name
-    r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
-    if r.status_code in (200, 204):
-        logger.info("Kopplade Traccar-enheten '%s' till halsbandet '%s'",
-                    dev.get("name"), name)
-        return True
-    logger.warning("Kunde inte koppla '%s' till '%s': %s %s",
-                   dev.get("name"), name, r.status_code, r.text[:200])
-    return False
+def _pa_platsen(devices, device_id):
+    """Enheten som bär det här platsnumret just nu — för att känna igen en
+    hund som fått ett nytt namn i Alphan utan att byta plats."""
+    for d in devices:
+        if str(d.get("uniqueId")) == str(device_id):
+            return d
+    return None
 
 
 def _register_device(admin, device_id, name):
@@ -204,77 +212,55 @@ def _frigor_plats(admin, device_id, behall_id):
     return False
 
 
-def _claim_by_name(admin, device_id, name):
-    """Låter hundens befintliga Traccar-enhet ta över det nya platsnumret.
+def _synka(admin, dev, device_id, name):
+    """Ser till att enheten bär hundens Garmin-namn och nuvarande platsnummer.
 
-    Returnerar True om enheten nu pekar på device_id, False om försöket
-    misslyckades, och None om ingen enhet hör till hunden (då får den adopteras
-    eller skapas).
-
-    Alternativet — en ny enhet per platsnummer — ger en ny hund i kartan varje
-    gång Alphas lista numreras om, och delar upp spåret på flera enheter. Här
-    följer identiteten hunden i stället för platsen.
+    Namnet i Traccar ska alltid vara det som står i Alphan: döper laget om en
+    hund i handenheten ska den heta så på kartan också.
     """
-    d = _hitta_hund(_devices(admin), name)
-    if d is None:
-        return None
-    if str(d.get("uniqueId")) == str(device_id):
-        return _stampla(admin, d, name)
+    parkerad = (dev.get("attributes") or {}).get("garminParkerad")
+    if (str(dev.get("uniqueId")) == str(device_id)
+            and (dev.get("name") or "") == name
+            and _garmin_namn(dev) == name.strip().lower()
+            and not parkerad):
+        return True
 
-    gammalt = d.get("uniqueId")
-    d["uniqueId"] = str(device_id)
-    d.setdefault("attributes", {})["garminName"] = name
-    d["attributes"].pop("garminParkerad", None)
-    r = _admin_request(admin, "PUT", "/api/devices/" + str(d["id"]), json=d)
+    gammalt_id = dev.get("uniqueId")
+    gammalt_namn = dev.get("name")
+    dev["uniqueId"] = str(device_id)
+    dev["name"] = name
+    dev.setdefault("attributes", {})["garminName"] = name
+    dev["attributes"].pop("garminParkerad", None)
+
+    r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
     if r.status_code not in (200, 204) and _krock(r):
         # Platsen är upptagen av en annan enhet — flytta undan den och
         # försök en gång till. Se _frigor_plats.
-        if _frigor_plats(admin, device_id, d["id"]):
-            r = _admin_request(admin, "PUT", "/api/devices/" + str(d["id"]), json=d)
+        if _frigor_plats(admin, device_id, dev["id"]):
+            r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
+
     if r.status_code in (200, 204):
-        logger.info("'%s' bytte plats i Alphas hundlista: %s -> %s "
-                    "(samma Traccar-enhet, historiken följer med)",
-                    d.get("name"), gammalt, device_id)
+        if str(gammalt_id) != str(device_id):
+            logger.info("'%s' bytte plats i Alphas hundlista: %s -> %s "
+                        "(samma Traccar-enhet, historiken följer med)",
+                        name, gammalt_id, device_id)
+        if gammalt_namn != name:
+            logger.info("Halsband %s heter '%s' i Alphan — hette '%s' i Traccar",
+                        device_id, name, gammalt_namn)
         return True
-    logger.warning("Kunde inte flytta '%s' från %s till %s: %s %s",
-                   d.get("name"), gammalt, device_id, r.status_code, r.text[:200])
-    return False
-
-
-def _adoptera(admin, device_id, name):
-    """Kopplar ihop halsbandet med den enhet som redan bär platsnumret.
-
-    Enheten kan vara platshållaren vi själva skapade under namnfristen — då
-    döps den om. Är det en enhet laget döpt själv ("Sampo", fast halsbandet
-    heter "Hundar 8" i handenheten) rörs namnet inte: det är deras val. Det
-    enda som behövs är kopplingen, så vi känner igen hunden nästa gång Alphas
-    lista numreras om. Returnerar False om platsnumret är ledigt.
-    """
-    traffar = [d for d in _devices(admin) if str(d.get("uniqueId")) == str(device_id)]
-    if not traffar:
-        return False
-    dev = traffar[0]
-    if not (dev.get("name") or "").startswith("Ny hund "):
-        return _stampla(admin, dev, name)
-
-    gammalt = dev.get("name")
-    dev["name"] = name
-    dev.setdefault("attributes", {})["garminName"] = name
-    r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
-    if r.status_code in (200, 204):
-        logger.info("Döpte om halsband %s från '%s' till '%s'", device_id, gammalt, name)
-        return True
-    logger.warning("Kunde inte döpa om halsband %s till '%s': %s %s",
-                   device_id, name, r.status_code, r.text[:200])
+    logger.warning("Kunde inte uppdatera '%s' (plats %s): %s %s",
+                   name, device_id, r.status_code, r.text[:200])
     return False
 
 
 def _ensure_registered(admin, device_id, name, is_real_name):
-    """Ser till att positionen har en Traccar-enhet att landa i.
+    """Ser till att positionen har en Traccar-enhet som heter rätt.
 
-    Med ett riktigt Garmin-namn letar vi först efter hunden (på kopplingen,
-    annars på namnet) och flyttar den enheten hit. Finns ingen sådan adopteras
-    enheten som redan bär platsnumret, och först därefter skapas en ny.
+    Två saker kan ha ändrats sedan sist, men i praktiken aldrig samtidigt:
+    hunden kan ha bytt plats i Alphas lista (någon lade till eller tog bort
+    ett halsband), eller fått ett nytt namn i handenheten. Därför söks hunden
+    först på namnet — hittas den är det en omnumrering — och annars på
+    platsnumret, vilket är en omdöpning.
     """
     global _admin_nasta_forsok
     with _registered_lock:
@@ -285,10 +271,12 @@ def _ensure_registered(admin, device_id, name, is_real_name):
 
     try:
         if is_real_name:
-            klart = _claim_by_name(admin, device_id, name)
-            if klart is None:
-                klart = (_adoptera(admin, device_id, name)
-                         or _register_device(admin, device_id, name))
+            devices = _devices(admin)
+            dev = _hitta_hund(devices, name) or _pa_platsen(devices, device_id)
+            if dev is not None:
+                klart = _synka(admin, dev, device_id, name)
+            else:
+                klart = _register_device(admin, device_id, name)
         else:
             klart = _register_device(admin, device_id, name)
     except requests.RequestException as e:
