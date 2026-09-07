@@ -198,6 +198,17 @@ visa("8b) Listan numreras om — halsbandet kommer in som 99")
 kolla("samma enhet flyttad", unikt("Sampo"), ["99"])
 kolla("ingen ny enhet", len(DEVICES), 1)
 
+# --- 8c: en hund som heter samma sak som en jägare ------------------------
+# Namnreserven får inte kapa en jägares enhet. Jägarna har jakt-<namn> eller
+# ett långt id; halsbanden ligger på 96 och uppåt.
+DEVICES[:] = [{"id": 1, "name": "Olle", "uniqueId": "19890605", "attributes": {}},
+              {"id": 2, "name": "Joel", "uniqueId": "jakt-joel", "attributes": {}}]
+nollstall()
+skicka("98", "Olle")
+visa("8c) Halsband som heter 'Olle' — samma som en jägare")
+kolla("jägarens enhet orörd", [d["uniqueId"] for d in DEVICES if d["id"] == 1], ["19890605"])
+kolla("eget halsband skapat", [d["uniqueId"] for d in DEVICES if d["id"] == 3], ["98"])
+
 # --- 9: ingen admin-adress svarar — bryggan får inte proppa kön -----------
 # I skogen kan varken LAN-adressen eller den publika nås. Uppslagningen görs
 # numera även när positionen gick fram, så utan paus hade varje position

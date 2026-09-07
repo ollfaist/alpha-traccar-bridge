@@ -113,6 +113,17 @@ def _garmin_namn(d):
     return ((d.get("attributes") or {}).get("garminName") or "").strip().lower()
 
 
+def _ar_halsband(d):
+    """Om enheten kan vara ett ANT+-halsband. Alphas platsnummer är 96 och
+    uppåt, alltså högst tre siffror — jägarnas enheter heter jakt-<namn> eller
+    bär ett långt id. Utan den här spärren hade namnreserven nedan kunnat ta
+    över en jägares enhet om en hund råkar heta samma sak i handenheten."""
+    if (d.get("attributes") or {}).get("garminParkerad"):
+        return True
+    uid = str(d.get("uniqueId") or "")
+    return uid.isdigit() and len(uid) <= 3
+
+
 def _hitta_hund(devices, name):
     """Enheten som hör till den här hunden.
 
@@ -126,7 +137,7 @@ def _hitta_hund(devices, name):
         if _garmin_namn(d) == n:
             return d
     for d in devices:
-        if (d.get("name") or "").strip().lower() == n:
+        if _ar_halsband(d) and (d.get("name") or "").strip().lower() == n:
             return d
     return None
 
@@ -177,6 +188,10 @@ def _frigor_plats(admin, device_id, behall_id):
     for d in _devices(admin):
         if str(d.get("uniqueId")) != str(device_id) or d.get("id") == behall_id:
             continue
+        # Markeras som parkerad: det tillfälliga id:t är för långt för att
+        # kännas igen som ett halsband, och utan markeringen tappar vi den
+        # här enheten när den sedan ska hitta tillbaka på sitt namn.
+        d.setdefault("attributes", {})["garminParkerad"] = str(device_id)
         d["uniqueId"] = str(900000 + int(d["id"]))
         r = _admin_request(admin, "PUT", "/api/devices/" + str(d["id"]), json=d)
         if r.status_code in (200, 204):
@@ -209,6 +224,7 @@ def _claim_by_name(admin, device_id, name):
     gammalt = d.get("uniqueId")
     d["uniqueId"] = str(device_id)
     d.setdefault("attributes", {})["garminName"] = name
+    d["attributes"].pop("garminParkerad", None)
     r = _admin_request(admin, "PUT", "/api/devices/" + str(d["id"]), json=d)
     if r.status_code not in (200, 204) and _krock(r):
         # Platsen är upptagen av en annan enhet — flytta undan den och
