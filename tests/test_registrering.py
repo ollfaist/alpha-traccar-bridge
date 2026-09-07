@@ -10,9 +10,13 @@ Två saker kan ändras i Alphan mellan två jakter, och de drar åt olika håll:
   * Döper man om en hund i handenheten byter den namn men behåller platsen.
     Då är platsnumret det stabila.
 
-Därför söks hunden först på namnet och sedan på platsen. Undantaget är Alphans
-egna autonamn ("Hundar 3"), som återanvänds till nästa hund man lägger till —
-de identifierar ingenting och får bara matcha på plats.
+Därför söks hunden först på namnet och sedan på platsen. Två hundar kan inte
+heta samma sak i Alphan samtidigt, så ett namn pekar alltid ut en bestämd hund
+just nu.
+
+Undantaget är Alphans egna uppräkningsnamn ("Hundar 3"). De är unika för
+stunden men återanvänds över tid — tar man bort en hund får nästa man lägger
+till samma namn — så de får bara matcha på plats.
 """
 import json
 import os

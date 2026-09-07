@@ -114,12 +114,16 @@ def _garmin_namn(d):
     return ((d.get("attributes") or {}).get("garminName") or "").strip().lower()
 
 
-# Alphan döper nya halsband till "Hundar", "Hundar 1", "Hundar 2" — bara en
-# uppräkning. Tar man bort en hund återanvänds namnet till nästa. Ett sådant
-# namn säger alltså ingenting om VILKEN hund det är, och får inte användas för
-# att känna igen en hund som bytt plats i listan: då hade den nya hunden ärvt
-# den gamlas Traccar-enhet och deras spår blandats ihop. Ger man hunden ett
-# eget namn i Alphan blir namnet unikt och duger som identitet.
+# Två hundar kan inte heta samma sak i Alphan samtidigt, så ett namn pekar
+# alltid ut en bestämd hund just nu — det är därför namnet duger som identitet
+# när listan numreras om.
+#
+# Undantaget är Alphans egna uppräkningsnamn: "Hundar", "Hundar 1", "Hundar 2".
+# De är unika för stunden men återanvänds över tid — tar man bort en hund får
+# nästa man lägger till samma namn. Ett sådant namn säger alltså inte vilken
+# hund det är, bara vilken plats i ordningen halsbandet råkade få, och får
+# därför bara matcha på platsnumret. Annars hade den nya hunden ärvt den
+# gamlas Traccar-enhet och deras spår blandats ihop.
 _AUTONAMN = re.compile(r"^(hundar|hund|dog|dogs)\s*\d*$", re.IGNORECASE)
 
 
@@ -154,6 +158,25 @@ def _hitta_hund(devices, name):
         if _ar_halsband(d) and (d.get("name") or "").strip().lower() == n:
             return d
     return None
+
+
+def _varna_om_atervunnet_namn(devices, name):
+    """Skriver ut varför Traccar plötsligt får två enheter med samma namn.
+
+    Händer när Alphan återanvänt ett uppräkningsnamn: den gamla hunden ligger
+    kvar med sitt spår och den nya får en egen enhet. Det är med flit, men
+    utan den här raden ser det ut som en bugg när listan visar två "Hundar 3".
+    """
+    if not _ar_autonamn(name):
+        return
+    n = name.strip().lower()
+    if any((d.get("name") or "").strip().lower() == n or _garmin_namn(d) == n
+           for d in devices):
+        logger.warning("'%s' finns redan i Traccar men är ett av Alphans "
+                       "uppräkningsnamn — skapar en egen enhet för det nya "
+                       "halsbandet i stället för att slå ihop spåren. Ge hunden "
+                       "ett eget namn i handenheten så slipper ni dubbletten.",
+                       name)
 
 
 def _pa_platsen(devices, device_id):
@@ -276,6 +299,7 @@ def _ensure_registered(admin, device_id, name, is_real_name):
             if dev is not None:
                 klart = _synka(admin, dev, device_id, name)
             else:
+                _varna_om_atervunnet_namn(devices, name)
                 klart = _register_device(admin, device_id, name)
         else:
             klart = _register_device(admin, device_id, name)
