@@ -50,6 +50,13 @@ _NAME_GRACE = 60.0
 _admin_ok_url = None
 _admin_url_lock = threading.Lock()
 
+# När ingen admin-adress svarar slutar vi fråga en stund. Uppslagningen görs
+# numera även när positionen gick fram, och utan paus hade varje position i
+# skogen — där ingen av adresserna går att nå — kostat en timeout per adress
+# på sändartråden och proppat kön bakom sig.
+_ADMIN_PAUS = 300.0
+_admin_nasta_forsok = 0.0
+
 
 def _admin_urls(admin):
     urls = admin.get("urls")
@@ -253,9 +260,12 @@ def _ensure_registered(admin, device_id, name, is_real_name):
     annars på namnet) och flyttar den enheten hit. Finns ingen sådan adopteras
     enheten som redan bär platsnumret, och först därefter skapas en ny.
     """
+    global _admin_nasta_forsok
     with _registered_lock:
         if _registered_names.get(device_id) == name:
             return
+    if time.time() < _admin_nasta_forsok:
+        return
 
     try:
         if is_real_name:
@@ -266,9 +276,13 @@ def _ensure_registered(admin, device_id, name, is_real_name):
         else:
             klart = _register_device(admin, device_id, name)
     except requests.RequestException as e:
-        logger.warning("Kunde inte nå Traccars admin-API för halsband %s: %s", device_id, e)
+        _admin_nasta_forsok = time.time() + _ADMIN_PAUS
+        logger.warning("Kunde inte nå Traccars admin-API för halsband %s: %s "
+                       "— pausar registreringen i %d minuter",
+                       device_id, e, int(_ADMIN_PAUS / 60))
         return
 
+    _admin_nasta_forsok = 0.0
     if klart:
         with _registered_lock:
             _registered_names[device_id] = name

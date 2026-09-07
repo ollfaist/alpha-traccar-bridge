@@ -86,6 +86,7 @@ def nollstall():
     tc._registered_names.clear()
     tc._first_seen.clear()
     tc._admin_ok_url = None
+    tc._admin_nasta_forsok = 0.0
     LOGG.clear()
 
 
@@ -196,6 +197,32 @@ skicka("99", "Hundar 8")
 visa("8b) Listan numreras om — halsbandet kommer in som 99")
 kolla("samma enhet flyttad", unikt("Sampo"), ["99"])
 kolla("ingen ny enhet", len(DEVICES), 1)
+
+# --- 9: ingen admin-adress svarar — bryggan får inte proppa kön -----------
+# I skogen kan varken LAN-adressen eller den publika nås. Uppslagningen görs
+# numera även när positionen gick fram, så utan paus hade varje position
+# kostat en timeout per adress på sändartråden och köat upp resten bakom sig.
+DEVICES[:] = [{"id": 1, "name": "Sampo", "uniqueId": "105", "attributes": {}}]
+nollstall()
+forsok = []
+riktig = tc._admin_request
+
+
+def _dod_admin(admin, method, path, **kw):
+    forsok.append(path)
+    raise tc.requests.RequestException("nätet är nere")
+
+
+tc._admin_request = _dod_admin
+try:
+    for _ in range(4):
+        tc._deliver(BAS + "/", "105", 63.27, 13.34, {"dogName": "Hundar 8"}, admin=ADMIN)
+finally:
+    tc._admin_request = riktig
+print("\n9) Ingen admin-adress svarar")
+kolla("pausen är satt", tc._admin_nasta_forsok > time.time(), True)
+kolla("bara ett försök på fyra positioner", len(forsok), 1)
+nollstall()
 
 print("\n%s" % ("ALLA TESTER OK" if fel == 0 else "%d FEL" % fel))
 sys.exit(1 if fel else 0)
