@@ -70,6 +70,21 @@ _pending_lock = threading.Lock()
 _name_thread = None
 _active_channel = None
 
+# När den sista ANT+-sidan kom in, och den nod som tar emot dem just nu.
+#
+# En ANT+-kanal som slutat spåra sin master säger inte till. openant anropar
+# aldrig on_close (sök i paketet — träffarna är noll), vi sätter ingen
+# söktidsgräns, och återanslutningen i start() körs bara om node.start()
+# returnerar eller kastar. En kanal som stängts, t.ex. för att Alphan var
+# avstängd när bryggan startade, lämnar alltså processen vid liv med
+# "listening" i loggen och ingenting som kommer in — bara en omstart hjälpte.
+# Det var det som hände på jakten 7 sep: laget fick starta om Pi:n mitt i
+# jakten, och sedan gick 2942 positioner in i rad utan ett enda avbrott.
+_last_page = 0.0
+_active_node = None
+_SILENCE_LIMIT = 1200.0    # 20 min utan en enda sida = bygg om kanalen
+_watchdog_thread = None
+
 
 def _maybe_request_name(channel, idx):
     """Mark an asset as needing identification. Deliberately does not send.
@@ -113,7 +128,40 @@ def _ensure_name_thread():
         _name_thread.start()
 
 
+def _tystnadsvakt():
+    """Bygger om kanalen när inget hörts på en stund.
+
+    Alphan är avstängd mellan jakterna, så tystnad i sig är normalt — men en
+    ombyggnad kostar ingenting när det inte finns något att ta emot, och är
+    det enda som får tillbaka en kanal som slutat lyssna. Hellre en rad i
+    loggen då och då än en jakt utan hundar.
+    """
+    while True:
+        time.sleep(30)
+        node = _active_node
+        if node is None or _last_page == 0.0:
+            continue
+        if time.time() - _last_page < _SILENCE_LIMIT:
+            continue
+        logger.warning("Inga ANT+-sidor på %d minuter — bygger om kanalen "
+                       "(normalt när Alphan är avstängd)", max(1, int(_SILENCE_LIMIT / 60)))
+        try:
+            node.stop()        # får node.start() att returnera i start()
+        except Exception as exc:
+            logger.warning("Kunde inte stoppa ANT+-noden: %s", exc)
+
+
+def _ensure_watchdog():
+    global _watchdog_thread
+    if _watchdog_thread is None or not _watchdog_thread.is_alive():
+        _watchdog_thread = threading.Thread(
+            target=_tystnadsvakt, name="ant-tystnadsvakt", daemon=True)
+        _watchdog_thread.start()
+
+
 def _on_data(data, on_position, channel=None):
+    global _last_page
+    _last_page = time.time()
     page = data[0]
     asset_id = int(data[1])
     # Only the low 5 bits are the asset index; the upper bits differ between
@@ -228,7 +276,9 @@ def _open_channel(node, device_id, on_position):
     channel = node.new_channel(Channel.Type.BIDIRECTIONAL_RECEIVE)
     channel.on_broadcast_data = lambda data: _on_data(data, on_position, channel)
     channel.on_burst_data = lambda data: _on_data(data, on_position, channel)
-    channel.on_close = lambda: logger.warning("ANT+ channel closed")
+    # on_close anropas aldrig av openant — hooken låg kvar och gav en falsk
+    # känsla av att en stängd kanal skulle märkas. Tystnadsvakten gör jobbet.
+    channel.set_search_timeout(255)   # 255 = sök för alltid
     # 2048 = 16 Hz, matches the Asset Tracker master's transmit rate. At 8192
     # (4 Hz) we downsampled the stream and phase-locked onto page 0x02, so page
     # 0x01 (latitude low bits) only slipped through ~every 2 min — that starved
@@ -237,9 +287,11 @@ def _open_channel(node, device_id, on_position):
     channel.set_rf_freq(57)
     channel.set_id(device_id, 41, 0)
     channel.open()
-    global _active_channel
+    global _active_channel, _last_page
     _active_channel = channel
+    _last_page = time.time()      # räkna tystnaden från nu, inte från förra passet
     _ensure_name_thread()
+    _ensure_watchdog()
     logger.info("ANT+ channel open — listening for Alpha 100")
     return channel
 
@@ -249,7 +301,7 @@ def start(device_id: int, on_position, reconnect_delay: int = 5):
 
     Automatically reconnects if the ANT+ node drops.
     """
-    global _active_channel
+    global _active_channel, _active_node
     while True:
         node = None
         try:
@@ -258,6 +310,7 @@ def start(device_id: int, on_position, reconnect_delay: int = 5):
             # assembling a latitude from two different fixes — the exact
             # right-angle staircase the 1:2 pairing was added to remove.
             _active_channel = None
+            _active_node = None
             sync_buffer.clear()
             with _pending_lock:
                 _pending_names.clear()
@@ -265,6 +318,7 @@ def start(device_id: int, on_position, reconnect_delay: int = 5):
             node = Node()
             node.set_network_key(0x00, NETWORK_KEY)
             _open_channel(node, device_id, on_position)
+            _active_node = node
             node.start()
             # node.start() returns normally only on clean shutdown
             logger.warning("ANT+ node.start() returned — reconnecting in %ds", reconnect_delay)
