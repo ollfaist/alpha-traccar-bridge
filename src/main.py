@@ -54,13 +54,18 @@ def main():
     device_id = config["ant"].get("device_id", 0)
 
     # Admin-API:et (för att auto-registrera nya halsband) är separat från
-    # OsmAnd-adressen ovan — kräver inloggning, och pekar mot Traccars
-    # LAN-adress istället för den publika, så det inte beror på att
-    # portforwarding/NAT-loopback fungerar för just den här funktionen.
+    # OsmAnd-adressen ovan och kräver inloggning.
     admin_cfg = config["traccar"].get("admin") or {}
+    # Flera adresser tillåts och provas i tur och ordning. Bryggan flyttar
+    # mellan hemmanätet och en delad uppkoppling i skogen: LAN-adressen är
+    # snabbast hemma men finns inte alls på väg, och en enda adress gjorde att
+    # registreringen tyst misslyckades varje gång bryggan var borta.
+    admin_urls = admin_cfg.get("urls") or ([admin_cfg["url"]] if admin_cfg.get("url") else [])
     admin = None
-    if admin_cfg.get("url") and admin_cfg.get("user") and admin_cfg.get("password"):
-        admin = {"url": admin_cfg["url"], "auth": (admin_cfg["user"], admin_cfg["password"])}
+    if admin_urls and admin_cfg.get("user") and admin_cfg.get("password"):
+        admin = {"urls": list(admin_urls),
+                 "auth": (admin_cfg["user"], admin_cfg["password"])}
+        logger.info("Admin-API för registrering: %s", ", ".join(admin_urls))
     else:
         logger.warning("Ingen traccar.admin i config.yaml — nya halsband måste "
                         "fortfarande läggas till manuellt i Traccar.")

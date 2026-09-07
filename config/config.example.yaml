@@ -7,9 +7,15 @@ traccar:
   # Valfritt: låter bryggan själv skapa nya halsband i Traccar första gången
   # de dyker upp (och döpa om dem när Garmin-namnet väl lästs in), istället
   # för att man måste lägga till dem manuellt via Traccars gränssnitt/API.
-  # Peka mot Traccars LAN-adress (admin-API:et, inte OsmAnd-porten). Utelämna
-  # hela blocket för att stänga av — bryggan fungerar precis som förut då.
+  # Peka mot admin-API:et (inte OsmAnd-porten). Ange gärna flera adresser —
+  # de provas i tur och ordning och den som svarar kommer ihåg sig. Bryggan
+  # flyttar mellan hemmanätet och en delad uppkoppling i skogen, och en ensam
+  # LAN-adress gör att registreringen tyst misslyckas varje gång den är borta.
+  # Utelämna hela blocket för att stänga av — bryggan fungerar som förut då.
   admin:
-    url: http://192.168.1.x:8190
+    urls:
+      - http://192.168.1.x:8190       # hemma, snabbast
+      - http://din-publika-adress:8190
+      # - http://nuc:8190             # bäst: Tailscale-namn, funkar överallt
     user: din-traccar-inloggning
     password: ditt-losenord
