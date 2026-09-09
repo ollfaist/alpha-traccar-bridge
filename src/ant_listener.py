@@ -24,13 +24,16 @@ if not _NETWORK_KEY_HEX:
     )
 NETWORK_KEY = [int(_NETWORK_KEY_HEX[i:i + 2], 16) for i in range(0, 16, 2)]
 
+# Namnen hamnar i event-strängen ("Treed dist=843m") och kartan läser första
+# ordet. "Not connected" med mellanslag blev därför "not" på andra sidan och
+# matchade ingenting — därav ett enda ord.
 SITUATIONS = {
     0: "Sitting",
     1: "Moving",
     2: "Pointed",
     3: "Treed",
     4: "Unknown",
-    7: "Not connected",
+    7: "NotConnected",
 }
 
 BATTERY_STATUS = {0: "New", 1: "Good", 2: "Ok", 3: "Low", 4: "Critical"}
@@ -209,13 +212,21 @@ def _on_data(data, on_position, channel=None):
                      asset_id, SITUATIONS.get(status_raw, str(status_raw)),
                      distance, bearing, low_bat, gps_lost)
 
+        # Tappad kontakt går fram på två sätt beroende på handenhet: egen bit
+        # i statusbyten, eller lägeskod 7. Båda betyder att positionen nedan är
+        # den senast kända, inte var hunden är nu — och då ska kartan visa ett
+        # frågetecken i stället för att låta hunden stå kvar som "trädskällande"
+        # i timmar. Positionen skickas fortfarande, så man ser var den sist
+        # fanns; det är bara påståendet om vad den gör som dras tillbaka.
+        tappad = comm_lost or status_raw == 7
         if not gps_lost:
             sync_buffer[str(asset_id) + "_meta"] = {
                 "distance": distance,
                 "bearing": bearing,
-                "situation": SITUATIONS.get(status_raw, "Code {}".format(status_raw)),
+                "situation": ("NotConnected" if tappad else
+                              SITUATIONS.get(status_raw, "Code {}".format(status_raw))),
                 "low_battery": low_bat,
-                "comm_lost": comm_lost,
+                "comm_lost": tappad,
             }
 
     elif page == 0x02:
@@ -246,6 +257,7 @@ def _on_data(data, on_position, channel=None):
                 "distance": meta.get("distance", 0),
                 "bearing": meta.get("bearing", 0.0),
                 "low_battery": meta.get("low_battery", False),
+                "comm_lost": meta.get("comm_lost", False),
             })
 
     elif page == 0x10:
