@@ -160,6 +160,22 @@ def _hitta_hund(devices, name):
     return None
 
 
+def _varna_om_skulle_skriva_over(namn_pa_platsen, device_id, autonamn):
+    """Skriver ut varför en enhet parkeras undan i stället för att döpas om.
+
+    Ett riktigt namn blir aldrig spontant "Hundar 3" — det uppräkningsnamnet
+    betyder att Alphan inte hunnit ge halsbandet ett eget namn än. Troligast
+    är att listan numrerats om och en annan hund tagit platsen. Skrivs raden
+    över hade den gamla hundens spår och historik fortsatt under ett namn som
+    inte längre stämde, och ingen hade sett det hända.
+    """
+    logger.warning("Plats %s bar det riktiga namnet '%s', men halsbandet som "
+                   "skickar nu har bara Alphans uppräkningsnamn '%s' — troligen "
+                   "har listan numrerats om. '%s' parkeras med sin historik "
+                   "intakt, och en ny enhet skapas för det inkomna halsbandet.",
+                   device_id, namn_pa_platsen, autonamn, namn_pa_platsen)
+
+
 def _varna_om_atervunnet_namn(devices, name):
     """Skriver ut varför Traccar plötsligt får två enheter med samma namn.
 
@@ -295,12 +311,26 @@ def _ensure_registered(admin, device_id, name, is_real_name):
     try:
         if is_real_name:
             devices = _devices(admin)
-            dev = _hitta_hund(devices, name) or _pa_platsen(devices, device_id)
+            dev = _hitta_hund(devices, name)
             if dev is not None:
                 klart = _synka(admin, dev, device_id, name)
             else:
-                _varna_om_atervunnet_namn(devices, name)
-                klart = _register_device(admin, device_id, name)
+                upptagen = _pa_platsen(devices, device_id)
+                # Ett uppräkningsnamn ("Hundar 3") får aldrig skriva över ett
+                # riktigt namn som redan sitter på platsen — se
+                # _varna_om_skulle_skriva_over. Bär platsen redan samma sorts
+                # namn (en tidigare platshållare, eller ett annat
+                # uppräkningsnamn) är omdöpning fortfarande rätt.
+                if (upptagen is not None and _ar_autonamn(name)
+                        and not _ar_autonamn(upptagen.get("name"))):
+                    _varna_om_skulle_skriva_over(upptagen.get("name"), device_id, name)
+                    klart = (_frigor_plats(admin, device_id, None)
+                             and _register_device(admin, device_id, name))
+                elif upptagen is not None:
+                    klart = _synka(admin, upptagen, device_id, name)
+                else:
+                    _varna_om_atervunnet_namn(devices, name)
+                    klart = _register_device(admin, device_id, name)
         else:
             klart = _register_device(admin, device_id, name)
     except requests.RequestException as e:

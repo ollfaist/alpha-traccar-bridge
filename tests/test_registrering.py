@@ -205,14 +205,16 @@ kolla("ingen ny enhet", len(DEVICES), 1)
 kolla("kopplingen uppdaterad",
       (DEVICES[0].get("attributes") or {}).get("garminName"), "Rocky")
 
-# --- 9: autonamn speglas också -------------------------------------------
+# --- 9: autonamn speglas också, när ingen redan äger platsen --------------
 # "Hundar 8" är Alphans egen uppräkning. Namnet ska ändå synas i Traccar —
-# laget vill se samma sak på båda ställena.
-DEVICES[:] = [enhet(1, "Sampo", "105")]
+# laget vill se samma sak på båda ställena. Platsen är tom sedan innan, så
+# skyddet i test 12 (riktigt namn får inte skrivas över) berörs inte här.
+DEVICES[:] = []
 nollstall()
 skicka("105", "Hundar 8")
-visa("9) Halsbandet heter 'Hundar 8' i Alphan")
+visa("9) Halsbandet heter 'Hundar 8' i Alphan, ny plats")
 kolla("Traccar visar samma namn", namnet("105"), ["Hundar 8"])
+kolla("en enhet", len(DEVICES), 1)
 
 # --- 10: autonamn identifierar INTE över platsbyte ------------------------
 # Tar man bort en hund återanvänder Alphan "Hundar 8" till nästa. Matchade vi
@@ -232,7 +234,24 @@ visa("11) Halsband som heter 'Olle' — samma som en jägare")
 kolla("jägarens enhet orörd", [d["uniqueId"] for d in DEVICES if d["id"] == 1], ["19890605"])
 kolla("eget halsband skapat", [d["uniqueId"] for d in DEVICES if d["id"] == 3], ["98"])
 
-# --- 12: ingen admin-adress svarar — bryggan får inte proppa kön ----------
+# --- 12: uppräkningsnamn får inte skriva över ett riktigt namn ------------
+# Sampos halsband stod på plats 105. Ett halsband som skickar "Hundar 1" på
+# samma plats har troligen tagit över den efter en omnumrering — det ska inte
+# få radera Sampos namn och historik. Sampo parkeras (behåller sitt namn och
+# sin historik, bara med ett tillfälligt uniqueId), och "Hundar 1" får en
+# egen ny enhet.
+DEVICES[:] = [enhet(1, "Sampo", "105", "Sampo")]
+nollstall()
+skicka("105", "Hundar 1")
+visa("12) 'Hundar 1' dyker upp på Sampos plats 105")
+kolla("Sampo behåller sitt namn", [d["name"] for d in DEVICES if d["id"] == 1], ["Sampo"])
+kolla("Sampo parkerad, inte längre på 105",
+      [d["uniqueId"] for d in DEVICES if d["id"] == 1] != ["105"], True)
+kolla("en ny enhet skapad för 'Hundar 1' på 105", namnet("105"), ["Hundar 1"])
+kolla("Sampo fortfarande hittbar som halsband (parkerad)",
+      DEVICES[0].get("attributes", {}).get("garminParkerad"), "105")
+
+# --- 13: ingen admin-adress svarar — bryggan får inte proppa kön ----------
 # I skogen kan varken LAN-adressen eller den publika nås. Uppslagningen görs
 # även när positionen gick fram, så utan paus hade varje position kostat en
 # timeout per adress på sändartråden och köat upp resten bakom sig.

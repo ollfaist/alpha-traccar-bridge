@@ -44,6 +44,28 @@ def _semi_to_deg(semi):
     return (float(semi) / 2147483648.0) * 180.0
 
 
+def _avkoda_namn(rador):
+    """Hundnamnet ur de tio råa bytarna från identifikationssidorna.
+
+    Tidigare avkodades varje halva för sig som ASCII med errors="ignore", och
+    då försvann å, ä och ö tyst — "Måns" blev "Mns". Två saker rättas här:
+    halvorna slås ihop innan avkodning, och teckenuppsättningen tillåter mer
+    än sju bitar. Skulle Alphan skicka UTF-8 kan ett å ligga med sin ena byte
+    i första halvan och sin andra i den andra, och per-halva-avkodning hade
+    förstört det oavsett teckenuppsättning.
+
+    UTF-8 provas först och latin-1 som reserv. Svensk latin-1-text är nästan
+    aldrig giltig UTF-8 (0xE5 0xE4 saknar de fortsättningsbytes UTF-8 kräver),
+    så ordningen är säker — och latin-1 kan aldrig misslyckas, så vi står
+    aldrig utan ett namn.
+    """
+    rensad = rador.strip(b"\x00")
+    try:
+        return rensad.decode("utf-8")
+    except UnicodeDecodeError:
+        return rensad.decode("iso-8859-1")
+
+
 def _update_name(asset_id):
     p1 = sync_buffer.get(str(asset_id) + "_name1")
     p2 = sync_buffer.get(str(asset_id) + "_name2")
@@ -52,7 +74,7 @@ def _update_name(asset_id):
     # Both identification pages seen. Mark it resolved even when the name is
     # blank, or an unnamed dog would keep the request loop running forever.
     sync_buffer[str(asset_id) + "_name_done"] = True
-    name = (p1 + p2).strip()
+    name = _avkoda_namn(p1 + p2).strip()
     if name and sync_buffer.get(str(asset_id) + "_name") != name:
         sync_buffer[str(asset_id) + "_name"] = name
         logger.info("Dog %d name: %s", asset_id, name)
@@ -227,19 +249,16 @@ def _on_data(data, on_position, channel=None):
             })
 
     elif page == 0x10:
-        # Asset Identifier page 1: color + first 5 chars of the name set in the Alpha 100
-        # Strip only the null padding: a space here can be a real character at
-        # the 5/6 boundary ("Bella Boo"), and _update_name trims the join.
-        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00")
-        sync_buffer[str(idx) + "_name1"] = name_part
+        # Asset Identifier page 1: color + first 5 chars of the name set in the
+        # Alpha 100. Bytarna sparas råa och avkodas först när båda halvorna
+        # finns — se _avkoda_namn. Ingen strippning här: ett mellanslag kan
+        # vara ett riktigt tecken vid 5/6-gränsen ("Bella Boo").
+        sync_buffer[str(idx) + "_name1"] = bytes(data[3:8])
         _update_name(idx)
 
     elif page == 0x11:
         # Asset Identifier page 2: type + last 5 chars of the name
-        # Strip only the null padding: a space here can be a real character at
-        # the 5/6 boundary ("Bella Boo"), and _update_name trims the join.
-        name_part = bytes(data[3:8]).decode("ascii", errors="ignore").strip("\x00")
-        sync_buffer[str(idx) + "_name2"] = name_part
+        sync_buffer[str(idx) + "_name2"] = bytes(data[3:8])
         _update_name(idx)
 
     elif page == 0x52:
