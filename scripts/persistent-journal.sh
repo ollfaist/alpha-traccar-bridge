@@ -7,8 +7,10 @@
 # Pi:n startades om. Traccars egen logg räddade den utredningen, men bryggans
 # sida av historien var borta.
 #
-# Storleken hålls nere med flit: Pi:n loggar en rad per position och hund
-# (~2400 rader per hund och timme) på ett SD-kort som inte tål att fyllas.
+# Pi:n loggar en rad per position och hund (~2400 rader per hund och timme).
+# 2 GB på ett 29 GB-kort räcker för en hel säsong av full historik — och
+# just den historiken är vad man behöver när något gått fel i efterhand
+# (7 sep försvann loggen och Sampos namnbyte gick inte att spåra).
 
 set -e
 
@@ -23,9 +25,9 @@ mkdir -p /etc/systemd/journald.conf.d
 cat > /etc/systemd/journald.conf.d/persistent.conf <<'EOF'
 [Journal]
 Storage=persistent
-SystemMaxUse=200M
-SystemMaxFileSize=20M
-MaxRetentionSec=1month
+SystemMaxUse=2G
+SystemMaxFileSize=100M
+MaxRetentionSec=6month
 EOF
 
 systemd-tmpfiles --create --prefix /var/log/journal
