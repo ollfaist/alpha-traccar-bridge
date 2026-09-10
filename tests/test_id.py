@@ -41,11 +41,12 @@ kolla("'Räv 2'", tc.hund_id("Räv 2"), "hund-rav-2")
 kolla("blanksteg trimmas", tc.hund_id("  Sixten  "), "hund-sixten")
 kolla("versaler spelar ingen roll", tc.hund_id("SIXTEN"), "hund-sixten")
 
+print("\nUppräkningsnamn duger också — de blir bara en enhet som heter så:\n")
+kolla("'Hundar 2'", tc.hund_id("Hundar 2"), "hund-hundar-2")
+kolla("'Hundar'", tc.hund_id("Hundar"), "hund-hundar")
+
 print("\nNamn som inte duger som id:\n")
-kolla("namnlös platshållare 'Dog 98'", tc.hund_id("Dog 98"), None)
-kolla("uppräkningsnamn 'Hundar'", tc.hund_id("Hundar"), None)
-kolla("uppräkningsnamn 'Hundar 3'", tc.hund_id("Hundar 3"), None)
-kolla("uppräkningsnamn 'DOG 5'", tc.hund_id("DOG 5"), None)
+kolla("bryggans platshållare 'Dog 98'", tc.hund_id("Dog 98"), None)
 kolla("tomt namn", tc.hund_id(""), None)
 kolla("bara skräptecken", tc.hund_id("!!!"), None)
 
@@ -146,10 +147,10 @@ DEVICES[0]["name"] = "Fido"
 skicka("hund-sampo", "Sampo")
 kolla("manuell omdöpning rättas mot Garmin", namn("hund-sampo"), "Sampo")
 
-# platshållare för ett odöpt halsband
+# halsband som aldrig skickar sitt namn — id på platsnumret
 nollstall()
-skicka("hund-plats-98", "Odöpt hund 98")
-kolla("odöpt halsband får en egen enhet", namn("hund-plats-98"), "Odöpt hund 98")
+skicka("hund-namnlos-98", "hund-namnlos-98")
+kolla("namnlöst halsband får en egen enhet", namn("hund-namnlos-98"), "hund-namnlos-98")
 
 # ingen admin-adress svarar → paus, inga upprepade timeouts
 nollstall()

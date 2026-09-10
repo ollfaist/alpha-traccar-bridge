@@ -10,8 +10,10 @@ krånglar i skogen.
 Hundens id i Traccar härleds ur namnet — "hund-sampo". Det betyder att samma
 hund får samma enhet oavsett vilken handenhet eller brygga som hör den, och
 att två bryggor som hör samma hund fyller på samma spår i stället för att
-slåss om en enhet. Priset: hunden måste ha ett eget namn i Alphan. Alphans
-egna uppräkningsnamn ("Hundar 3") återanvänds mellan hundar och duger inte.
+slåss om en enhet. Priset: byter man namn på hunden i Alphan blir det en ny
+enhet, och den gamla ligger kvar med sin historik frånkopplad. Odöpta
+halsband hamnar på en enhet som heter det Alphan kallar dem ("Hundar 2") —
+den som bryr sig om historiken döper hunden i handenheten.
 """
 
 import logging
@@ -51,16 +53,6 @@ _admin_url_lock = threading.Lock()
 _ADMIN_PAUS = 300.0
 _admin_nasta_forsok = 0.0
 
-# Alphans egna uppräkningsnamn: "Hundar", "Hundar 1", "Hundar 2". De är unika
-# för stunden men återanvänds över tid — tar man bort en hund får nästa man
-# lägger till samma namn. Ett sådant namn säger inte vilken hund det är, så
-# det duger inte som id.
-_AUTONAMN = re.compile(r"^(hundar|hund|dog|dogs)\s*\d*$", re.IGNORECASE)
-
-
-def ar_autonamn(name):
-    return bool(_AUTONAMN.match((name or "").strip()))
-
 
 def _slug(name):
     """Namnet till en id-vänlig form: gemener, ASCII, bindestreck. 'Måns' ->
@@ -77,11 +69,17 @@ def _slug(name):
 def hund_id(name):
     """Traccar-id för en hund, härlett ur Garmin-namnet — 'hund-sampo'.
 
-    Returnerar None för namnlösa halsband och för Alphans uppräkningsnamn:
-    inget av dem pekar ut en bestämd hund, och den som skickade på ett sådant
-    id hade fått olika hundars spår att blandas ihop.
+    Två hundar kan inte heta samma sak i Alphan samtidigt, så namnet pekar
+    alltid ut en bestämd hund just nu. Alphans egna uppräkningsnamn ("Hundar
+    2") duger också: de kan återanvändas mellan hundar över tid, men då
+    hamnar allt på en enhet som heter just "Hundar 2" — den som bryr sig om
+    en hunds historik ger den ett eget namn i handenheten.
+
+    Returnerar None bara för bryggans egen platshållare ("Dog 98"), som
+    betyder att identifikationssidorna ännu inte kommit — då finns inget
+    namn att gå på.
     """
-    if not name or name.startswith("Dog ") or ar_autonamn(name):
+    if not name or name.startswith("Dog "):
         return None
     s = _slug(name)
     return "hund-" + s if s else None

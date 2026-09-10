@@ -72,14 +72,12 @@ def main():
 
     last_state = {}
     last_sent = {}
-    # Slotar vi har sett ett riktigt namn för. En slot som en gång fått ett
-    # namn faller aldrig tillbaka på platshållaren igen — Alphan kan sluta
-    # skicka namnsidor efter ett tag, och då ska hunden inte plötsligt byta
-    # identitet.
-    named_slots = set()
+    # När vi först såg en slot utan att ha fått namnet. Identifikationssidorna
+    # dröjer några sekunder efter att hunden dykt upp — under tiden skickar vi
+    # inget, hellre det än en enhet som heter "Dog 98".
     first_seen = {}
-    warned_unnamed = set()
-    NAME_GRACE = 60.0
+    warned_namnlos = set()
+    NAME_GRACE = 30.0
     # ANT+ delivers ~8 fixes/s; that's far more than Traccar needs and would
     # flood the WAN link. Throttle to one send per device per interval, but
     # never throttle a situation change (Treed/Pointed alarms must fire at once).
@@ -111,27 +109,26 @@ def main():
             return
         last_sent[dev] = now
 
-        # Id:t är hundens namn, inte platsnumret i Alphas lista. Namnlösa
-        # halsband och uppräkningsnamn ("Hundar 3") får en frist att skicka
-        # sitt riktiga namn innan de läggs in som "Odöpt hund <plats>".
+        # Id:t härleds ur namnet Alphan gett hunden — även "Hundar 2" duger,
+        # den blir bara en enhet som heter så. hund_id() ger None bara medan
+        # bryggan ännu inte hört namnet; då väntar vi en kort stund hellre än
+        # att skapa "Dog 98" i Traccar.
         slot = data["device_id"]
-        hid = hund_id(data["name"])
-        if hid:
-            named_slots.add(slot)
-            unique_id, dog_name = hid, data["name"]
-        else:
+        unique_id = hund_id(data["name"])
+        if unique_id is None:
             forst = first_seen.setdefault(slot, now)
-            if slot not in named_slots and (now - forst) < NAME_GRACE:
-                return  # vänta på identifikationssidorna
-            unique_id = "hund-plats-" + slot
-            dog_name = "Odöpt hund " + slot
-            if slot not in warned_unnamed:
-                warned_unnamed.add(slot)
-                logger.warning("Halsbandet på plats %s har inget eget namn i "
-                               "Alphan (%r) — visas som '%s'. Döp hunden i "
-                               "handenheten så får den en egen identitet som "
-                               "följer med mellan jakter och handenheter.",
-                               slot, data["name"], dog_name)
+            if (now - forst) < NAME_GRACE:
+                return
+            # Halsbandet skickar aldrig sitt namn. Sällsynt — men då får det
+            # ett id på platsnumret så det åtminstone syns på kartan.
+            unique_id = "hund-namnlos-" + slot
+            if slot not in warned_namnlos:
+                warned_namnlos.add(slot)
+                logger.warning("Halsbandet på plats %s skickar inget namn ens "
+                               "efter %d s — visas som '%s'. Kontrollera att "
+                               "hunden finns med i handenhetens lista.",
+                               slot, int(NAME_GRACE), unique_id)
+        dog_name = data["name"] if unique_id != "hund-namnlos-" + slot else unique_id
 
         logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
                     dog_name, slot, unique_id,
