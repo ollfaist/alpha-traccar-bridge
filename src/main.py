@@ -4,7 +4,7 @@ import os
 import time
 import yaml
 from ant_listener import start as ant_start, dump as ant_dump
-from traccar_client import send_position
+from traccar_client import send_position, hund_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -72,6 +72,14 @@ def main():
 
     last_state = {}
     last_sent = {}
+    # Slotar vi har sett ett riktigt namn för. En slot som en gång fått ett
+    # namn faller aldrig tillbaka på platshållaren igen — Alphan kan sluta
+    # skicka namnsidor efter ett tag, och då ska hunden inte plötsligt byta
+    # identitet.
+    named_slots = set()
+    first_seen = {}
+    warned_unnamed = set()
+    NAME_GRACE = 60.0
     # ANT+ delivers ~8 fixes/s; that's far more than Traccar needs and would
     # flood the WAN link. Throttle to one send per device per interval, but
     # never throttle a situation change (Treed/Pointed alarms must fire at once).
@@ -103,10 +111,32 @@ def main():
             return
         last_sent[dev] = now
 
-        logger.info("Dog '%s' [%s]: %.6f, %.6f  %s  dist=%dm%s",
-                    data["name"], data["device_id"],
+        # Id:t är hundens namn, inte platsnumret i Alphas lista. Namnlösa
+        # halsband och uppräkningsnamn ("Hundar 3") får en frist att skicka
+        # sitt riktiga namn innan de läggs in som "Odöpt hund <plats>".
+        slot = data["device_id"]
+        hid = hund_id(data["name"])
+        if hid:
+            named_slots.add(slot)
+            unique_id, dog_name = hid, data["name"]
+        else:
+            forst = first_seen.setdefault(slot, now)
+            if slot not in named_slots and (now - forst) < NAME_GRACE:
+                return  # vänta på identifikationssidorna
+            unique_id = "hund-plats-" + slot
+            dog_name = "Odöpt hund " + slot
+            if slot not in warned_unnamed:
+                warned_unnamed.add(slot)
+                logger.warning("Halsbandet på plats %s har inget eget namn i "
+                               "Alphan (%r) — visas som '%s'. Döp hunden i "
+                               "handenheten så får den en egen identitet som "
+                               "följer med mellan jakter och handenheter.",
+                               slot, data["name"], dog_name)
+
+        logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
+                    dog_name, slot, unique_id,
                     data["lat"], data["lon"], data["situation"],
-                    data["distance"], "  LOW BAT" if low else "")
+                    data["distance"], "  LÅGT BATT" if low else "")
         extras = {
             "bearing": round(data["bearing"]),
             "altitude": 0,
@@ -121,12 +151,11 @@ def main():
         # once the clock is trustworthy; see _clock_is_trustworthy().
         if _clock_is_trustworthy():
             extras["timestamp"] = int(time.time())
-        if not data["name"].startswith("Dog "):
-            extras["dogName"] = data["name"]
+        extras["dogName"] = dog_name
         if alarm:
             extras["alarm"] = alarm
 
-        send_position(traccar_url, data["device_id"], data["lat"], data["lon"], extras, admin=admin)
+        send_position(traccar_url, unique_id, data["lat"], data["lon"], extras, admin=admin)
 
     logger.info("Starting — device_id=%s", device_id)
     ant_start(device_id, on_position)

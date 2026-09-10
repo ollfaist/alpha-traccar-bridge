@@ -1,11 +1,17 @@
 """
-Forwards GPS positions to Traccar via OsmAnd HTTP protocol.
-Traccar endpoint: http://<server>:5055/?id=X&lat=Y&lon=Z
+Skickar hundpositioner till Traccar via OsmAnd-protokollet.
+Endpoint: http://<server>:5055/?id=X&lat=Y&lon=Z
 
-Sending runs on a background thread. send_position() only enqueues, because it
-is called from openant's data-dispatch thread: blocking there stops page
-decoding for every dog at once, and the retry path below can take ~19s — which
-is exactly what happens when the WAN link is flaky in the forest.
+Sändningen ligger på en egen tråd. send_position() lägger bara i kön, för den
+anropas från openants avkodningstråd: blockerar man där stannar avkodningen
+för alla hundar samtidigt, och omförsöken nedan kan ta ~19 s när WAN-länken
+krånglar i skogen.
+
+Hundens id i Traccar härleds ur namnet — "hund-sampo". Det betyder att samma
+hund får samma enhet oavsett vilken handenhet eller brygga som hör den, och
+att två bryggor som hör samma hund fyller på samma spår i stället för att
+slåss om en enhet. Priset: hunden måste ha ett eget namn i Alphan. Alphans
+egna uppräkningsnamn ("Hundar 3") återanvänds mellan hundar och duger inte.
 """
 
 import logging
@@ -13,6 +19,7 @@ import queue
 import re
 import threading
 import time
+import unicodedata
 
 import requests
 
@@ -27,23 +34,11 @@ _worker = None
 _worker_lock = threading.Lock()
 _dropped = 0
 
-# Halsband som redan bekräftats finnas i Traccar (eller som vi själva just
-# skapat) under den här körningen — namn vi känner till per device_id, så vi
-# bara registrerar/döper om en gång och inte vid varje position.
-_registered_names = {}
+# Enheter vi redan bekräftat i Traccar den här körningen — id -> namnet vi
+# senast satte. Så vi bara slår mot admin-API:et en gång per hund, inte per
+# position.
+_registered = {}
 _registered_lock = threading.Lock()
-
-# Första gången ett okänt device_id dök upp, för namnfristen nedan.
-_first_seen = {}
-
-# Hur länge vi väntar på Garmin-namnet innan ett namnlöst halsband ändå läggs
-# in. device_id är Alphas platsnummer i hundlistan (96 + plats), inte hunden —
-# lägger man till en hund i handenheten numreras listan om och samma hund
-# kommer in under ett nytt nummer. Namnet är det enda stabila vi har, så det
-# är värt att vänta de sekunder identifikationssidorna behöver: hinner vi
-# skapa "Ny hund 98" först får laget två Traccar-enheter för samma hund, med
-# historiken delad mellan dem.
-_NAME_GRACE = 60.0
 
 # Adressen till admin-API:et som senast svarade. Bryggan flyttar mellan
 # hemmanätet och en delad uppkoppling i skogen, och LAN-adressen finns bara på
@@ -51,12 +46,45 @@ _NAME_GRACE = 60.0
 _admin_ok_url = None
 _admin_url_lock = threading.Lock()
 
-# När ingen admin-adress svarar slutar vi fråga en stund. Uppslagningen görs
-# numera även när positionen gick fram, och utan paus hade varje position i
-# skogen — där ingen av adresserna går att nå — kostat en timeout per adress
-# på sändartråden och proppat kön bakom sig.
+# När ingen admin-adress svarar slutar vi fråga en stund, så en oåtkomlig
+# server inte kostar en timeout per position på sändartråden.
 _ADMIN_PAUS = 300.0
 _admin_nasta_forsok = 0.0
+
+# Alphans egna uppräkningsnamn: "Hundar", "Hundar 1", "Hundar 2". De är unika
+# för stunden men återanvänds över tid — tar man bort en hund får nästa man
+# lägger till samma namn. Ett sådant namn säger inte vilken hund det är, så
+# det duger inte som id.
+_AUTONAMN = re.compile(r"^(hundar|hund|dog|dogs)\s*\d*$", re.IGNORECASE)
+
+
+def ar_autonamn(name):
+    return bool(_AUTONAMN.match((name or "").strip()))
+
+
+def _slug(name):
+    """Namnet till en id-vänlig form: gemener, ASCII, bindestreck. 'Måns' ->
+    'mans'. Visningsnamnet i Traccar behåller å, ä, ö — det är bara nyckeln
+    som förenklas, så den är förutsägbar i URL:er och loggrader."""
+    s = name.strip().lower()
+    for a, b in (("å", "a"), ("ä", "a"), ("ö", "o"),
+                 ("ø", "o"), ("æ", "ae"), ("ü", "u")):
+        s = s.replace(a, b)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+
+
+def hund_id(name):
+    """Traccar-id för en hund, härlett ur Garmin-namnet — 'hund-sampo'.
+
+    Returnerar None för namnlösa halsband och för Alphans uppräkningsnamn:
+    inget av dem pekar ut en bestämd hund, och den som skickade på ett sådant
+    id hade fått olika hundars spår att blandas ihop.
+    """
+    if not name or name.startswith("Dog ") or ar_autonamn(name):
+        return None
+    s = _slug(name)
+    return "hund-" + s if s else None
 
 
 def _admin_urls(admin):
@@ -67,11 +95,9 @@ def _admin_urls(admin):
 
 
 def _admin_request(admin, method, path, **kwargs):
-    """Anropar admin-API:et på första adressen som svarar.
-
-    Den som gick fram provas först nästa gång, så vi inte betalar en timeout
-    per position när bryggan står utanför hemmanätet.
-    """
+    """Anropar admin-API:et på första adressen som svarar. Den som gick fram
+    provas först nästa gång, så vi inte betalar en timeout per position när
+    bryggan står utanför hemmanätet."""
     global _admin_ok_url
     urls = _admin_urls(admin)
     if not urls:
@@ -98,7 +124,8 @@ def _admin_request(admin, method, path, **kwargs):
 
 def _krock(r):
     """Traccar avvisar två enheter med samma uniqueId — ordalydelsen skiljer
-    sig mellan versioner, så vi tittar efter båda."""
+    mellan versioner, så vi tittar efter båda. Att det redan finns en enhet
+    med id:t är inget fel här: en annan brygga kan ha hunnit skapa den."""
     text = (r.text or "").lower()
     return "duplicate" in text or "unique" in text
 
@@ -109,248 +136,55 @@ def _devices(admin):
     return r.json()
 
 
-def _garmin_namn(d):
-    """Vilket Garmin-namn enheten är kopplad till, enligt Traccar-attributet."""
-    return ((d.get("attributes") or {}).get("garminName") or "").strip().lower()
+def _ensure_device(admin, unique_id, name):
+    """Ser till att enheten finns och att den heter det Garmin säger.
 
-
-# Två hundar kan inte heta samma sak i Alphan samtidigt, så ett namn pekar
-# alltid ut en bestämd hund just nu — det är därför namnet duger som identitet
-# när listan numreras om.
-#
-# Undantaget är Alphans egna uppräkningsnamn: "Hundar", "Hundar 1", "Hundar 2".
-# De är unika för stunden men återanvänds över tid — tar man bort en hund får
-# nästa man lägger till samma namn. Ett sådant namn säger alltså inte vilken
-# hund det är, bara vilken plats i ordningen halsbandet råkade få, och får
-# därför bara matcha på platsnumret. Annars hade den nya hunden ärvt den
-# gamlas Traccar-enhet och deras spår blandats ihop.
-_AUTONAMN = re.compile(r"^(hundar|hund|dog|dogs)\s*\d*$", re.IGNORECASE)
-
-
-def _ar_autonamn(name):
-    return bool(_AUTONAMN.match((name or "").strip()))
-
-
-def _ar_halsband(d):
-    """Om enheten kan vara ett ANT+-halsband. Alphas platsnummer är 96 och
-    uppåt, alltså högst tre siffror — jägarnas enheter heter jakt-<namn> eller
-    bär ett långt id. Utan den här spärren hade namnsökningen nedan kunnat ta
-    över en jägares enhet om en hund råkar heta samma sak i handenheten."""
-    if (d.get("attributes") or {}).get("garminParkerad"):
-        return True
-    uid = str(d.get("uniqueId") or "")
-    return uid.isdigit() and len(uid) <= 3
-
-
-def _hitta_hund(devices, name):
-    """Hundens enhet, sökt på namnet — för att känna igen den på en ny plats.
-
-    Attributet garminName går före visningsnamnet så kopplingen håller även om
-    enheten hunnit döpas om. Autonamn duger inte som identitet, se _AUTONAMN.
-    """
-    if _ar_autonamn(name):
-        return None
-    n = name.strip().lower()
-    for d in devices:
-        if _garmin_namn(d) == n:
-            return d
-    for d in devices:
-        if _ar_halsband(d) and (d.get("name") or "").strip().lower() == n:
-            return d
-    return None
-
-
-def _varna_om_skulle_skriva_over(namn_pa_platsen, device_id, autonamn):
-    """Skriver ut varför en enhet parkeras undan i stället för att döpas om.
-
-    Ett riktigt namn blir aldrig spontant "Hundar 3" — det uppräkningsnamnet
-    betyder att Alphan inte hunnit ge halsbandet ett eget namn än. Troligast
-    är att listan numrerats om och en annan hund tagit platsen. Skrivs raden
-    över hade den gamla hundens spår och historik fortsatt under ett namn som
-    inte längre stämde, och ingen hade sett det hända.
-    """
-    logger.warning("Plats %s bar det riktiga namnet '%s', men halsbandet som "
-                   "skickar nu har bara Alphans uppräkningsnamn '%s' — troligen "
-                   "har listan numrerats om. '%s' parkeras med sin historik "
-                   "intakt, och en ny enhet skapas för det inkomna halsbandet.",
-                   device_id, namn_pa_platsen, autonamn, namn_pa_platsen)
-
-
-def _varna_om_atervunnet_namn(devices, name):
-    """Skriver ut varför Traccar plötsligt får två enheter med samma namn.
-
-    Händer när Alphan återanvänt ett uppräkningsnamn: den gamla hunden ligger
-    kvar med sitt spår och den nya får en egen enhet. Det är med flit, men
-    utan den här raden ser det ut som en bugg när listan visar två "Hundar 3".
-    """
-    if not _ar_autonamn(name):
-        return
-    n = name.strip().lower()
-    if any((d.get("name") or "").strip().lower() == n or _garmin_namn(d) == n
-           for d in devices):
-        logger.warning("'%s' finns redan i Traccar men är ett av Alphans "
-                       "uppräkningsnamn — skapar en egen enhet för det nya "
-                       "halsbandet i stället för att slå ihop spåren. Ge hunden "
-                       "ett eget namn i handenheten så slipper ni dubbletten.",
-                       name)
-
-
-def _pa_platsen(devices, device_id):
-    """Enheten som bär det här platsnumret just nu — för att känna igen en
-    hund som fått ett nytt namn i Alphan utan att byta plats."""
-    for d in devices:
-        if str(d.get("uniqueId")) == str(device_id):
-            return d
-    return None
-
-
-def _register_device(admin, device_id, name):
-    """Skapar enheten i Traccar via admin-API:et. Körs bara när OsmAnd-porten
-    svarat 400 på ett halsband vi inte känner igen sedan tidigare — dvs. aldrig
-    på skräptrafik som redan avvisas där."""
-    r = _admin_request(admin, "POST", "/api/devices",
-                       json={"name": name, "uniqueId": str(device_id),
-                             "attributes": {"garminName": name}})
-    if r.status_code in (200, 201):
-        logger.info("Registrerade nytt halsband %s i Traccar som '%s'", device_id, name)
-        return True
-    if _krock(r):
-        # Redan skapad (t.ex. av en tidigare körning av bryggan) — inte
-        # ett fel, bara att vi inte visste om det än.
-        return True
-    logger.warning("Kunde inte registrera halsband %s i Traccar: %s %s",
-                   device_id, r.status_code, r.text[:200])
-    return False
-
-
-def _frigor_plats(admin, device_id, behall_id):
-    """Parkerar enheten som blockerar platsnumret på ett tillfälligt id.
-
-    Två hundar kan byta plats med varandra i Alphas lista. Då vill båda ha den
-    andras nummer samtidigt, och Traccar tillåter inte två enheter med samma
-    uniqueId — utan det här kommer ingen av dem loss. Den blockerande enheten
-    flyttas undan och tar sitt riktiga nummer själv nästa gång den skickar.
-    Det tillfälliga id:t hålls numeriskt så kartan fortsätter se den som hund.
-    """
-    for d in _devices(admin):
-        if str(d.get("uniqueId")) != str(device_id) or d.get("id") == behall_id:
-            continue
-        # Markeras som parkerad: det tillfälliga id:t är för långt för att
-        # kännas igen som ett halsband, och utan markeringen tappar vi den
-        # här enheten när den sedan ska hitta tillbaka på sitt namn.
-        d.setdefault("attributes", {})["garminParkerad"] = str(device_id)
-        d["uniqueId"] = str(900000 + int(d["id"]))
-        r = _admin_request(admin, "PUT", "/api/devices/" + str(d["id"]), json=d)
-        if r.status_code in (200, 204):
-            logger.info("Parkerade '%s' tillfälligt på %s för att frigöra plats %s",
-                        d.get("name"), d["uniqueId"], device_id)
-            return True
-        logger.warning("Kunde inte frigöra plats %s: %s %s",
-                       device_id, r.status_code, r.text[:200])
-        return False
-    return False
-
-
-def _synka(admin, dev, device_id, name):
-    """Ser till att enheten bär hundens Garmin-namn och nuvarande platsnummer.
-
-    Namnet i Traccar ska alltid vara det som står i Alphan: döper laget om en
-    hund i handenheten ska den heta så på kartan också.
-    """
-    parkerad = (dev.get("attributes") or {}).get("garminParkerad")
-    if (str(dev.get("uniqueId")) == str(device_id)
-            and (dev.get("name") or "") == name
-            and _garmin_namn(dev) == name.strip().lower()
-            and not parkerad):
-        return True
-
-    gammalt_id = dev.get("uniqueId")
-    gammalt_namn = dev.get("name")
-    dev["uniqueId"] = str(device_id)
-    dev["name"] = name
-    dev.setdefault("attributes", {})["garminName"] = name
-    dev["attributes"].pop("garminParkerad", None)
-
-    r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
-    if r.status_code not in (200, 204) and _krock(r):
-        # Platsen är upptagen av en annan enhet — flytta undan den och
-        # försök en gång till. Se _frigor_plats.
-        if _frigor_plats(admin, device_id, dev["id"]):
-            r = _admin_request(admin, "PUT", "/api/devices/" + str(dev["id"]), json=dev)
-
-    if r.status_code in (200, 204):
-        if str(gammalt_id) != str(device_id):
-            logger.info("'%s' bytte plats i Alphas hundlista: %s -> %s "
-                        "(samma Traccar-enhet, historiken följer med)",
-                        name, gammalt_id, device_id)
-        if gammalt_namn != name:
-            logger.info("Halsband %s heter '%s' i Alphan — hette '%s' i Traccar",
-                        device_id, name, gammalt_namn)
-        return True
-    logger.warning("Kunde inte uppdatera '%s' (plats %s): %s %s",
-                   name, device_id, r.status_code, r.text[:200])
-    return False
-
-
-def _ensure_registered(admin, device_id, name, is_real_name):
-    """Ser till att positionen har en Traccar-enhet som heter rätt.
-
-    Två saker kan ha ändrats sedan sist, men i praktiken aldrig samtidigt:
-    hunden kan ha bytt plats i Alphas lista (någon lade till eller tog bort
-    ett halsband), eller fått ett nytt namn i handenheten. Därför söks hunden
-    först på namnet — hittas den är det en omnumrering — och annars på
-    platsnumret, vilket är en omdöpning.
+    Görs en gång per hund och körning (se _registered). Skapar enheten om den
+    saknas, och rättar visningsnamnet om någon döpt om den i Traccar — namnen
+    ska komma från handenheten, ingen annanstans.
     """
     global _admin_nasta_forsok
     with _registered_lock:
-        if _registered_names.get(device_id) == name:
+        if _registered.get(unique_id) == name:
             return
     if time.time() < _admin_nasta_forsok:
         return
 
     try:
-        if is_real_name:
-            devices = _devices(admin)
-            dev = _hitta_hund(devices, name)
-            if dev is not None:
-                klart = _synka(admin, dev, device_id, name)
+        befintlig = next((d for d in _devices(admin)
+                          if str(d.get("uniqueId")) == unique_id), None)
+        if befintlig is None:
+            r = _admin_request(admin, "POST", "/api/devices",
+                               json={"name": name, "uniqueId": unique_id})
+            if r.status_code in (200, 201):
+                logger.info("La till '%s' i Traccar (%s)", name, unique_id)
+            elif _krock(r):
+                pass
             else:
-                upptagen = _pa_platsen(devices, device_id)
-                # Ett uppräkningsnamn ("Hundar 3") får aldrig skriva över ett
-                # riktigt namn som redan sitter på platsen — se
-                # _varna_om_skulle_skriva_over. Bär platsen redan samma sorts
-                # namn (en tidigare platshållare, eller ett annat
-                # uppräkningsnamn) är omdöpning fortfarande rätt.
-                if (upptagen is not None and _ar_autonamn(name)
-                        and not _ar_autonamn(upptagen.get("name"))):
-                    _varna_om_skulle_skriva_over(upptagen.get("name"), device_id, name)
-                    klart = (_frigor_plats(admin, device_id, None)
-                             and _register_device(admin, device_id, name))
-                elif upptagen is not None:
-                    klart = _synka(admin, upptagen, device_id, name)
-                else:
-                    _varna_om_atervunnet_namn(devices, name)
-                    klart = _register_device(admin, device_id, name)
-        else:
-            klart = _register_device(admin, device_id, name)
+                logger.warning("Kunde inte lägga till '%s' (%s): %s %s",
+                               name, unique_id, r.status_code, r.text[:200])
+                return
+        elif (befintlig.get("name") or "") != name:
+            gammalt = befintlig.get("name")
+            befintlig["name"] = name
+            r = _admin_request(admin, "PUT", "/api/devices/" + str(befintlig["id"]),
+                               json=befintlig)
+            if r.status_code in (200, 204):
+                logger.info("Enheten %s hette '%s' i Traccar — Garmin säger '%s', "
+                            "rättat", unique_id, gammalt, name)
+            else:
+                logger.warning("Kunde inte rätta namnet på %s: %s %s",
+                               unique_id, r.status_code, r.text[:200])
+                return
     except requests.RequestException as e:
         _admin_nasta_forsok = time.time() + _ADMIN_PAUS
-        logger.warning("Kunde inte nå Traccars admin-API för halsband %s: %s "
-                       "— pausar registreringen i %d minuter",
-                       device_id, e, int(_ADMIN_PAUS / 60))
+        logger.warning("Nådde inte Traccars admin-API för '%s': %s — pausar "
+                       "registreringen i %d min", name, e, int(_ADMIN_PAUS / 60))
         return
 
     _admin_nasta_forsok = 0.0
-    if klart:
-        with _registered_lock:
-            _registered_names[device_id] = name
-
-
-def _behover_namnfrist(device_id):
-    """True så länge vi ännu väntar på Garmin-namnet för ett okänt halsband."""
-    nu = time.time()
-    forst = _first_seen.setdefault(device_id, nu)
-    return (nu - forst) < _NAME_GRACE
+    with _registered_lock:
+        _registered[unique_id] = name
 
 
 def _deliver(server_url, device_id, lat, lon, extras, admin=None):
@@ -361,29 +195,21 @@ def _deliver(server_url, device_id, lat, lon, extras, admin=None):
     for attempt in range(3):
         try:
             r = requests.get(server_url, params=params, timeout=5)
-            if admin:
-                real_name = (extras or {}).get("dogName")
-                if r.status_code == 400:
-                    if real_name:
-                        _ensure_registered(admin, device_id, real_name, True)
-                    elif not _behover_namnfrist(device_id):
-                        _ensure_registered(admin, device_id,
-                                           "Ny hund {}".format(device_id), False)
-                elif real_name:
-                    # Positionen gick fram — men enheten kan bära platshållarens
-                    # namn, eller tillhöra en annan hund sedan Alpha numrerat om
-                    # listan. Kontrolleras en gång per halsband och namn (se
-                    # _registered_names), inte per position.
-                    _ensure_registered(admin, device_id, real_name, True)
+            # dogName finns bara för hundar. Är den satt ser vi till att
+            # enheten finns och heter rätt — cachen i _ensure_device gör att
+            # det bara blir ett riktigt anrop per hund och körning.
+            if admin and (extras or {}).get("dogName"):
+                _ensure_device(admin, device_id, extras["dogName"])
             r.raise_for_status()
-            logger.debug("Sent position for %s: %.6f, %.6f", device_id, lat, lon)
+            logger.debug("Skickade position för %s: %.6f, %.6f", device_id, lat, lon)
             return
         except requests.RequestException as e:
             if attempt < 2:
-                logger.warning("Traccar send failed (attempt %d): %s — retrying", attempt + 1, e)
+                logger.warning("Traccar-sändning misslyckades (försök %d): %s — försöker igen",
+                               attempt + 1, e)
                 time.sleep(2)
             else:
-                logger.warning("Failed to send to Traccar: %s", e)
+                logger.warning("Kunde inte skicka till Traccar: %s", e)
 
 
 def _run():
@@ -392,8 +218,7 @@ def _run():
         try:
             _deliver(*item)
         except Exception:
-            # Never let the worker die — positions would stop silently.
-            logger.exception("Unexpected error delivering position")
+            logger.exception("Oväntat fel vid leverans av position")
         finally:
             _queue.task_done()
 
@@ -410,11 +235,11 @@ def _ensure_worker():
 
 def send_position(server_url: str, device_id: str, lat: float, lon: float,
                    extras: dict = None, admin: dict = None):
-    """Queue a position for delivery. Returns immediately — never blocks the caller.
+    """Köar en position för leverans. Återvänder direkt — blockerar aldrig.
 
-    admin, if given, is {"urls": [<Traccar-adresser med adminAPI>], "auth": (user, pass)} —
-    används bara för att auto-registrera/döpa om okända halsband, aldrig för
-    själva positionsleveransen (den går alltid via OsmAnd-porten som förut)."""
+    admin, om satt, är {"urls": [...], "auth": (user, pass)} och används bara
+    för att skapa/rätta enheter, aldrig för själva positionsleveransen (den
+    går alltid via OsmAnd-porten)."""
     global _dropped
     _ensure_worker()
     item = (server_url, device_id, lat, lon, extras, admin)
@@ -429,7 +254,7 @@ def send_position(server_url: str, device_id: str, lat: float, lon: float,
         _queue.task_done()
         _dropped += 1
         if _dropped % 50 == 1:
-            logger.warning("Traccar backlog full — dropped %d oldest position(s)", _dropped)
+            logger.warning("Traccar-kön full — kastade %d äldsta position(er)", _dropped)
     except queue.Empty:
         pass
 
@@ -440,5 +265,5 @@ def send_position(server_url: str, device_id: str, lat: float, lon: float,
 
 
 def pending() -> int:
-    """Positions waiting to be delivered — useful for diagnosing a stalled link."""
+    """Positioner som väntar på leverans — användbart när länken hänger."""
     return _queue.qsize()
