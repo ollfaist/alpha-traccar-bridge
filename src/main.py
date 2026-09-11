@@ -6,7 +6,11 @@ import yaml
 from ant_listener import start as ant_start, dump as ant_dump
 from traccar_client import send_position, hund_id
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ANT_DEBUG=1 ger de råa statusbyten från handenheten — används för att
+# se hur den faktiskt signalerar tappad kontakt.
+logging.basicConfig(
+    level=logging.DEBUG if os.environ.get("ANT_DEBUG") else logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +82,19 @@ def main():
     first_seen = {}
     warned_namnlos = set()
     NAME_GRACE = 30.0
+
+    # Tappad kontakt syns inte i statusbyten: Alphan sätter varken comm_lost
+    # eller lägeskod 7 (noll sådana rader i loggen någonsin) — den upprepar
+    # bara sin sista kända position. Jakten 11 sep stod "Hundar 2" på exakt
+    # 63.418155, 13.161052 i 4085 rapporter i rad, märkt "Moving". På kartan
+    # såg det ut som en springande hund som stod stilla.
+    #
+    # En levande GPS-fix darrar alltid någon meter. Bitidentiska koordinater
+    # minut efter minut betyder därför inte "hunden står still" utan "det här
+    # är samma gamla värde om igen". Det är det vi letar efter.
+    frozen = {}            # slot -> (koordinat, när den frös)
+    STALE_AFTER = 180.0    # 3 min identiska koordinater = tappad kontakt
+    STALE_INTERVAL = 30.0  # och då räcker en position var 30:e sekund
     # ANT+ delivers ~8 fixes/s; that's far more than Traccar needs and would
     # flood the WAN link. Throttle to one send per device per interval, but
     # never throttle a situation change (Treed/Pointed alarms must fire at once).
@@ -86,7 +103,19 @@ def main():
     def on_position(data):
         dev = data["device_id"]
         prev = last_state.get(dev, {})
-        situation = data["situation"]
+        now = time.time()
+
+        # Har koordinaten inte rört sig på en bit är positionen inte längre
+        # färsk, oavsett vad Alphan påstår om läget. Se frozen ovan.
+        koord = (round(data["lat"], 6), round(data["lon"], 6))
+        fryst = frozen.get(dev)
+        if not fryst or fryst[0] != koord:
+            frozen[dev] = (koord, now)
+            tappad = False
+        else:
+            tappad = (now - fryst[1]) >= STALE_AFTER
+
+        situation = "NotConnected" if tappad else data["situation"]
         # The dog's own low-battery bit (page 0x01) — the only per-asset battery
         # signal the profile has. Handheld battery (page 0x52) must not feed this:
         # it carries no asset index, so it would alarm on every dog at once.
@@ -104,8 +133,10 @@ def main():
         # Only an alarm may skip the rate limit. Previously *any* situation
         # change did, so a dog hovering at the Sitting/Moving threshold flipped
         # state every fix and sent at the full ~8 Hz pair rate over mobile data.
-        now = time.time()
-        if alarm is None and (now - last_sent.get(dev, 0)) < MIN_SEND_INTERVAL:
+        # En hund vi tappat kontakten med skickar samma punkt om och om igen —
+        # den får en mycket glesare takt, det är ändå ingen ny information.
+        takt = STALE_INTERVAL if tappad else MIN_SEND_INTERVAL
+        if alarm is None and (now - last_sent.get(dev, 0)) < takt:
             return
         last_sent[dev] = now
 
@@ -132,7 +163,7 @@ def main():
 
         logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
                     dog_name, slot, unique_id,
-                    data["lat"], data["lon"], data["situation"],
+                    data["lat"], data["lon"], situation,
                     data["distance"], "  LÅGT BATT" if low else "")
         extras = {
             "bearing": round(data["bearing"]),
@@ -140,7 +171,7 @@ def main():
             # No "batt": page 0x52 reports the *handheld's* battery, not the
             # collar's, so sending it here labelled every dog with the Alpha's
             # charge. The collar exposes only the low_battery bit, sent as an alarm.
-            "event": "{} dist={}m".format(data["situation"], data["distance"]),
+            "event": "{} dist={}m".format(situation, data["distance"]),
         }
         # Decode time, not fix time — pages 0x01/0x02 carry no GPS timestamp.
         # It still keeps the track in order, because a retried position would

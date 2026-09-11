@@ -208,9 +208,12 @@ def _on_data(data, on_position, channel=None):
         gps_lost   = bool((data[5] >> 4) & 1)
         comm_lost  = bool((data[5] >> 5) & 1)
 
-        logger.debug("Dog %d: %s dist=%dm bearing=%.0fdeg low_bat=%s gps_lost=%s",
-                     asset_id, SITUATIONS.get(status_raw, str(status_raw)),
-                     distance, bearing, low_bat, gps_lost)
+        # Råa bitarna, för att kunna avgöra hur handenheten faktiskt signalerar
+        # tappad kontakt. Sätt ANT_DEBUG=1 för att få ut dem.
+        logger.debug("Hund %d: statusbyte=0x%02x läge=%s(%d) dist=%dm "
+                     "bäring=%.0f° låg_batt=%s gps_lost=%s comm_lost=%s",
+                     asset_id, data[5], SITUATIONS.get(status_raw, "?"), status_raw,
+                     distance, bearing, low_bat, gps_lost, comm_lost)
 
         # Tappad kontakt går fram på två sätt beroende på handenhet: egen bit
         # i statusbyten, eller lägeskod 7. Båda betyder att positionen nedan är
@@ -218,16 +221,20 @@ def _on_data(data, on_position, channel=None):
         # frågetecken i stället för att låta hunden stå kvar som "trädskällande"
         # i timmar. Positionen skickas fortfarande, så man ser var den sist
         # fanns; det är bara påståendet om vad den gör som dras tillbaka.
-        tappad = comm_lost or status_raw == 7
-        if not gps_lost:
-            sync_buffer[str(asset_id) + "_meta"] = {
-                "distance": distance,
-                "bearing": bearing,
-                "situation": ("NotConnected" if tappad else
-                              SITUATIONS.get(status_raw, "Code {}".format(status_raw))),
-                "low_battery": low_bat,
-                "comm_lost": tappad,
-            }
+        # gps_lost hoppade tidigare över hela meta-uppdateringen. Positionen
+        # skickades ändå — men med FÖRRA lägets meta, alltså gammalt läge på
+        # en punkt som inte rörde sig. Det var så "Hundar 2" kunde stå på
+        # samma koordinat i 4085 rapporter märkt "Moving". Meta skrivs nu
+        # alltid; det är bara koordinaterna som är opålitliga utan fix.
+        tappad = comm_lost or gps_lost or status_raw == 7
+        sync_buffer[str(asset_id) + "_meta"] = {
+            "distance": distance,
+            "bearing": bearing,
+            "situation": ("NotConnected" if tappad else
+                          SITUATIONS.get(status_raw, "Code {}".format(status_raw))),
+            "low_battery": low_bat,
+            "comm_lost": tappad,
+        }
 
     elif page == 0x02:
         # Consume the paired page 0x01 so a rebroadcast 0x02 can't re-emit with
