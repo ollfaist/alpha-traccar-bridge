@@ -152,8 +152,12 @@ def _ensure_device(admin, unique_id, name):
         befintlig = next((d for d in _devices(admin)
                           if str(d.get("uniqueId")) == unique_id), None)
         if befintlig is None:
+            # category=animal gör hundskapet explicit. Utan det fick kartan
+            # gissa ur id och namn, och en hund med ett riktigt namn utan
+            # "hund" i sig ("Etsa", "Wikstrom") hamnade bland jägarna.
             r = _admin_request(admin, "POST", "/api/devices",
-                               json={"name": name, "uniqueId": unique_id})
+                               json={"name": name, "uniqueId": unique_id,
+                                     "category": "animal"})
             if r.status_code in (200, 201):
                 logger.info("La till '%s' i Traccar (%s)", name, unique_id)
             elif _krock(r):
