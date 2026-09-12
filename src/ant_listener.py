@@ -105,6 +105,17 @@ _NAME_REQUEST_INTERVAL = 5
 # "Hundar" — samma koordinat, tre identiteter. Två platser skrev samtidigt till
 # hund-hundar, som därmed hoppade 20,9 km mellan två rapporter. Tre av dagens
 # Traccar-enheter fick två hundar var, och spåren blev obrukbara.
+# ANT_IDLOG=1 loggar identifikationssidorna rått. Till skillnad från
+# ANT_DEBUG, som loggar varenda ram (~16/s), rör det här bara de sidor som
+# kommer när vi frågar efter namn — någon rad per hund och minut.
+#
+# Vad vi letar efter: profilen kallar byte 2 i 0x10 "färg" och i 0x11 "typ",
+# och vi kastar båda. Är det i själva verket hundens id i handenheten (0-19,
+# det du anger när du lägger till hunden) har vi en identitet som varken
+# glider när en hund tas bort eller byter namn när Garmin döper om. Hundar 8
+# har id 15 — dyker 0x0F upp i någon av byten är frågan besvarad.
+_ID_LOGG = os.environ.get("ANT_IDLOG") == "1"
+
 _NAMN_TTL = 90.0            # äldre bekräftelse än så litar vi inte på
 _PLATS_TYST = 15.0          # en plats som inte hörts på så länge har lämnat listan
 _namn_tid = {}              # plats -> när namnet senast bekräftades
@@ -254,12 +265,55 @@ def _tystnadsvakt():
             logger.warning("Kunde inte stoppa ANT+-noden: %s", exc)
 
 
+_idtabell_thread = None
+
+
+def _ensure_idtabell():
+    global _idtabell_thread
+    if not _ID_LOGG:
+        return
+    if _idtabell_thread is None or not _idtabell_thread.is_alive():
+        _idtabell_thread = threading.Thread(
+            target=_idtabell_loop, name="ant-idtabell", daemon=True)
+        _idtabell_thread.start()
+
+
 def _ensure_watchdog():
     global _watchdog_thread
     if _watchdog_thread is None or not _watchdog_thread.is_alive():
         _watchdog_thread = threading.Thread(
             target=_tystnadsvakt, name="ant-tystnadsvakt", daemon=True)
         _watchdog_thread.start()
+
+
+def _logga_idsida(page, data, idx):
+    """Skriver ut en identifikationssida rå. Tyst om ANT_IDLOG inte är satt."""
+    if not _ID_LOGG:
+        return
+    hela = " ".join("%02X" % b for b in data[:8])
+    logger.info("IDSIDA 0x%02X plats=%-2d byte1=0x%02X byte2=0x%02X(%3d) "
+                "namnbytes=%s  text=%r  |  hela: %s",
+                page, idx, data[1], data[2], data[2],
+                " ".join("%02X" % b for b in data[3:8]),
+                _avkoda_namn(bytes(data[3:8])), hela)
+
+
+def _idtabell_loop():
+    """Var 30:e sekund: vilka platser som är igång och vad de heter.
+
+    Det är den här raden som visar själva omnumreringen. Tar du bort en hund
+    mitt i en jakt ska tabellen ändra form på nästa rad — och då vet vi exakt
+    när det hände och vad som flyttade sig."""
+    while True:
+        time.sleep(30)
+        if not _aktiva_platser:
+            continue
+        rader = []
+        for plats in sorted(_aktiva_platser):
+            namn = sync_buffer.get(str(plats) + "_name", "?")
+            rader.append("%d=%s%s" % (plats, namn,
+                                      "" if namn_farskt(plats) else " (obekräftat)"))
+        logger.info("IDTABELL  %s", "  |  ".join(rader))
 
 
 def _on_data(data, on_position, channel=None):
@@ -352,11 +406,13 @@ def _on_data(data, on_position, channel=None):
         # Alpha 100. Bytarna sparas råa och avkodas först när båda halvorna
         # finns — se _avkoda_namn. Ingen strippning här: ett mellanslag kan
         # vara ett riktigt tecken vid 5/6-gränsen ("Bella Boo").
+        _logga_idsida(page, data, idx)
         sync_buffer[str(idx) + "_name1"] = bytes(data[3:8])
         _update_name(idx)
 
     elif page == 0x11:
         # Asset Identifier page 2: type + last 5 chars of the name
+        _logga_idsida(page, data, idx)
         sync_buffer[str(idx) + "_name2"] = bytes(data[3:8])
         _update_name(idx)
 
@@ -410,6 +466,7 @@ def _open_channel(node, device_id, on_position):
     _last_page = time.time()      # räkna tystnaden från nu, inte från förra passet
     _ensure_name_thread()
     _ensure_watchdog()
+    _ensure_idtabell()
     logger.info("ANT+ channel open — listening for Alpha 100")
     return channel
 
