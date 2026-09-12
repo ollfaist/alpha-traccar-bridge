@@ -78,9 +78,14 @@ def _update_name(asset_id):
     # blank, or an unnamed dog would keep the request loop running forever.
     sync_buffer[str(asset_id) + "_name_done"] = True
     name = _avkoda_namn(p1 + p2).strip()
-    if name and sync_buffer.get(str(asset_id) + "_name") != name:
-        sync_buffer[str(asset_id) + "_name"] = name
-        logger.info("Dog %d name: %s", asset_id, name)
+    if not name:
+        return
+    tidigare = sync_buffer.get(str(asset_id) + "_name")
+    sync_buffer[str(asset_id) + "_name"] = name
+    _namn_tid[asset_id] = time.time()
+    if tidigare != name:
+        logger.info("Plats %d heter %s%s", asset_id, name,
+                    "" if tidigare is None else " (hette %s)" % tidigare)
 
 
 # Identification pages (0x10/0x11, carrying the Garmin dog name) are only sent by
@@ -89,6 +94,22 @@ def _update_name(asset_id):
 # set for every asset, so one request covers all pending dogs.
 _REQUEST_ID_PAYLOAD = [0x46, 0xFF, 0xFF, 0xFF, 0xFF, 0x04, 0x10, 0x04]
 _NAME_REQUEST_INTERVAL = 5
+
+# Ett namn gäller bara en stund. ANT+-profilen pekar ut en hund med sin plats
+# i handenhetens lista, och den listan numreras om när en hund läggs till eller
+# tas bort. Platsen är alltså inte hunden — bara namnet är det.
+#
+# Jakten 12 sep 2026: Alphan flyttade om listan 09:35. "Hundar 8" gled från
+# plats 9 till plats 8 och sedan till plats 2, och eftersom bryggan aldrig
+# frågade om namnen igen fortsatte hon rapportera som "Hundar 6" och sedan som
+# "Hundar" — samma koordinat, tre identiteter. Två platser skrev samtidigt till
+# hund-hundar, som därmed hoppade 20,9 km mellan två rapporter. Tre av dagens
+# Traccar-enheter fick två hundar var, och spåren blev obrukbara.
+_NAMN_TTL = 90.0            # äldre bekräftelse än så litar vi inte på
+_PLATS_TYST = 15.0          # en plats som inte hörts på så länge har lämnat listan
+_namn_tid = {}              # plats -> när namnet senast bekräftades
+_aktiva_platser = set()     # platser som rapporterat position den här omgången
+_plats_sedd = {}            # plats -> när den senast rapporterade
 
 _pending_names = set()
 _pending_lock = threading.Lock()
@@ -111,6 +132,57 @@ _SILENCE_LIMIT = 1200.0    # 20 min utan en enda sida = bygg om kanalen
 _watchdog_thread = None
 
 
+def namn_farskt(asset_id):
+    """Är platsens namn bekräftat nyligen nog att lita på?"""
+    nar = _namn_tid.get(int(asset_id))
+    return nar is not None and (time.time() - nar) <= _NAMN_TTL
+
+
+def glom_namnen(anledning):
+    """Kasta alla namnbekräftelser och be om nya.
+
+    Namnen finns kvar i sync_buffer — de behövs för loggen — men de räknas
+    inte längre som bekräftade, så inga positioner publiceras på dem förrän
+    Alphan svarat. Hellre en hund som saknas i en halv minut än en hund som
+    ritar sitt spår ovanpå en annans."""
+    if not _namn_tid:
+        return
+    logger.info("Glömmer namnen och frågar om: %s", anledning)
+    _namn_tid.clear()
+    with _pending_lock:
+        for plats in list(_aktiva_platser):
+            sync_buffer.pop(str(plats) + "_name_done", None)
+            sync_buffer.pop(str(plats) + "_name1", None)
+            sync_buffer.pop(str(plats) + "_name2", None)
+            _pending_names.add(plats)
+
+
+def _se_plats(asset_id):
+    """Bokför att en plats hörts av, och märk om listan ändrat form.
+
+    Två saker avslöjar en omnumrering. Den ena är att en plats tillkommer.
+    Den andra — den som faktiskt hände 12 sep — är att en plats TYSTNAR:
+    tas en hund bort ur listan glider alla under henne ner ett steg, och de
+    platserna var redan kända. Bara "ny plats" hade missat det helt."""
+    nu = time.time()
+    _plats_sedd[asset_id] = nu
+
+    tystnade = [p for p, t in _plats_sedd.items()
+                if p != asset_id and (nu - t) > _PLATS_TYST]
+    for p in tystnade:
+        _plats_sedd.pop(p, None)
+        _aktiva_platser.discard(p)
+    if tystnade:
+        glom_namnen("plats %s tystnade" %
+                    ", ".join(str(p) for p in sorted(tystnade)))
+
+    if asset_id in _aktiva_platser:
+        return
+    _aktiva_platser.add(asset_id)
+    if len(_aktiva_platser) > 1:
+        glom_namnen("plats %d tillkom" % asset_id)
+
+
 def _maybe_request_name(channel, idx):
     """Mark an asset as needing identification. Deliberately does not send.
 
@@ -119,7 +191,12 @@ def _maybe_request_name(channel, idx):
     indefinitely if the handheld goes out of range mid-transfer. The actual send
     happens on _name_request_loop instead.
     """
-    if channel is None or sync_buffer.get(str(idx) + "_name_done"):
+    if channel is None:
+        return
+    # name_done betyder "båda sidorna har kommit in", inte "namnet gäller för
+    # alltid". Har bekräftelsen hunnit bli gammal frågar vi om igen — det var
+    # den saknade förnyelsen som lät ett namn överleva en omnumrering.
+    if sync_buffer.get(str(idx) + "_name_done") and namn_farskt(idx):
         return
     with _pending_lock:
         _pending_names.add(idx)
@@ -133,7 +210,8 @@ def _name_request_loop():
             continue
         with _pending_lock:
             _pending_names.difference_update(
-                {i for i in _pending_names if sync_buffer.get(str(i) + "_name_done")}
+                {i for i in _pending_names
+                 if sync_buffer.get(str(i) + "_name_done") and namn_farskt(i)}
             )
             pending = sorted(_pending_names)
         if not pending:
@@ -255,9 +333,11 @@ def _on_data(data, on_position, channel=None):
                 logger.debug("Dog %d: invalid coords %.1f,%.1f — skipping", asset_id, lat, lon)
                 return
 
+            _se_plats(idx)
             on_position({
                 "device_id": str(asset_id),
                 "name": sync_buffer.get(str(idx) + "_name", "Dog {}".format(asset_id)),
+                "namn_farskt": namn_farskt(idx),
                 "lat": lat,
                 "lon": lon,
                 "situation": meta.get("situation", "Unknown"),

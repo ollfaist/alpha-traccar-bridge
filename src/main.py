@@ -3,7 +3,7 @@ import logging
 import os
 import time
 import yaml
-from ant_listener import start as ant_start, dump as ant_dump
+from ant_listener import start as ant_start, dump as ant_dump, glom_namnen
 from traccar_client import send_position, hund_id
 
 # ANT_DEBUG=1 ger de råa statusbyten från handenheten — används för att
@@ -92,6 +92,11 @@ def main():
     # En levande GPS-fix darrar alltid någon meter. Bitidentiska koordinater
     # minut efter minut betyder därför inte "hunden står still" utan "det här
     # är samma gamla värde om igen". Det är det vi letar efter.
+    # Vilken plats som äger ett Traccar-id just nu. Två platser får aldrig
+    # skriva till samma enhet: då blir spåret en linje mellan två hundar.
+    agare = {}             # unique_id -> plats
+    tystade = set()         # platser vi redan klagat på, så loggen inte svämmar
+
     frozen = {}            # slot -> (koordinat, när den frös)
     STALE_AFTER = 180.0    # 3 min identiska koordinater = tappad kontakt
     STALE_INTERVAL = 30.0  # och då räcker en position var 30:e sekund
@@ -145,6 +150,19 @@ def main():
         # bryggan ännu inte hört namnet; då väntar vi en kort stund hellre än
         # att skapa "Dog 98" i Traccar.
         slot = data["device_id"]
+
+        # Namnet är hundens enda stabila identitet, och det gäller bara så
+        # länge Alphan nyligen bekräftat det. Efter en omnumrering av listan
+        # kan det namn vi har höra till en annan hund — då väntar vi hellre
+        # några sekunder på ett nytt svar än publicerar under fel identitet.
+        if data.get("namn_farskt") is False:
+            if slot not in tystade:
+                tystade.add(slot)
+                logger.info("Plats %s väntar på att Alphan bekräftar namnet "
+                            "— inga positioner så länge", slot)
+            return
+        tystade.discard(slot)
+
         unique_id = hund_id(data["name"])
         if unique_id is None:
             forst = first_seen.setdefault(slot, now)
@@ -159,6 +177,20 @@ def main():
                                "efter %d s — visas som '%s'. Kontrollera att "
                                "hunden finns med i handenhetens lista.",
                                slot, int(NAME_GRACE), unique_id)
+        # Håller en annan plats redan id:t är något fel: antingen har listan
+        # numrerats om utan att vi märkt det, eller så bär två platser samma
+        # namn. Båda fallen slutar med två hundar på en enhet, så vi stannar
+        # och ber om namnen igen i stället.
+        tidigare = agare.get(unique_id)
+        if tidigare is not None and tidigare != slot:
+            logger.warning("Plats %s och plats %s gör båda anspråk på %s — "
+                           "frågar om namnen och skickar ingen av dem",
+                           tidigare, slot, unique_id)
+            glom_namnen("krock på %s" % unique_id)
+            agare.pop(unique_id, None)
+            return
+        agare[unique_id] = slot
+
         dog_name = data["name"] if unique_id != "hund-namnlos-" + slot else unique_id
 
         logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
