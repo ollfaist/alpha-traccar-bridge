@@ -407,7 +407,24 @@ def _on_data(data, on_position, channel=None):
         # finns — se _avkoda_namn. Ingen strippning här: ett mellanslag kan
         # vara ett riktigt tecken vid 5/6-gränsen ("Bella Boo").
         _logga_idsida(page, data, idx)
-        sync_buffer[str(idx) + "_name1"] = bytes(data[3:8])
+        # Första halvan börjar en ny omgång: kasta den gamla andra halvan så
+        # de aldrig kan paras ihop. Alphan skickar 0x10 och 0x11 direkt efter
+        # varandra, så den nya andra halvan är millisekunder bort.
+        #
+        # Utan detta blev namnbytet till "Doggy" först "Doggyr 6" — ny förhalva
+        # mot gammal efterhalva. Det syntes 12 sep 14:19:00 och hann inte ut på
+        # en position, men ett halvt namn är ett eget id: hund-doggyr-6 hade
+        # blivit en riktig enhet i Traccar.
+        ny_forhalva = bytes(data[3:8])
+        if sync_buffer.get(str(idx) + "_name1") != ny_forhalva:
+            # Namnet håller på att ändras. Då gäller inte den gamla
+            # bekräftelsen längre — antingen har hunden döpts om, eller så är
+            # det en annan hund på platsen. Båda ska tystas tills det nya
+            # namnet är helt.
+            _namn_tid.pop(idx, None)
+        sync_buffer.pop(str(idx) + "_name2", None)
+        sync_buffer.pop(str(idx) + "_name_done", None)
+        sync_buffer[str(idx) + "_name1"] = ny_forhalva
         _update_name(idx)
 
     elif page == 0x11:

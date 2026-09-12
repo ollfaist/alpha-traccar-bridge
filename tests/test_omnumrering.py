@@ -164,6 +164,27 @@ namnsidor(104, u"Hund 104")
 al._se_plats(104)
 kolla(u"men larmar inte om igen på samma tystnad", al.namn_farskt(104), True)
 
+# --- ett namnbyte får inte bli en chimär --------------------------------
+# Namnet kommer i två halvor om 5 tecken. Döps hunden om hinner den nya
+# förhalvan paras med den gamla efterhalvan: "Doggy" + "r 6" = "Doggyr 6".
+# Det hände på riktigt 12 sep 14:19:00. Ett halvt namn är ett eget id, så
+# hund-doggyr-6 hade blivit en riktig enhet i Traccar om en position råkat
+# gå ut i den bråkdelen av en sekund.
+nollstall()
+namnsidor(9, u"Hundar 6")
+kolla(u"utgångsläget", al.sync_buffer["9_name"], u"Hundar 6")
+
+# Bara första halvan av det nya namnet, som Alphan skickar den.
+al._on_data([0x10, 0xE0 | 9, 0x1B] + list(b"Doggy"), lambda d: None)
+kolla(u"ingen chimär medan andra halvan saknas",
+      al.sync_buffer["9_name"], u"Hundar 6")
+kolla(u"och namnet räknas inte som bekräftat", al.namn_farskt(9), False)
+
+al._on_data([0x11, 0xE0 | 9, 0x01] + [0, 0, 0, 0, 0], lambda d: None)
+kolla(u"först när andra halvan kommit står det rätt",
+      al.sync_buffer["9_name"], u"Doggy")
+kolla(u"och då är det bekräftat igen", al.namn_farskt(9), True)
+
 # --- glom_namnen ska tåla att anropas när inget finns -------------------
 nollstall()
 al.glom_namnen(u"inget att glömma")
