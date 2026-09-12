@@ -116,6 +116,17 @@ _NAME_REQUEST_INTERVAL = 5
 # har id 15 — dyker 0x0F upp i någon av byten är frågan besvarad.
 _ID_LOGG = os.environ.get("ANT_IDLOG") == "1"
 
+# Två skilda siffror, och det är skillnaden mellan dem som gör susen.
+#
+# Vi FRÅGAR ofta: namnen kostar en kvittens var 15:e sekund och Alphan svarar
+# inom en sekund, så en plats som bytt hund rättar sig nästan direkt.
+#
+# Vi SLUTAR LITA först efter 90 s. Hade samma siffra styrt båda skulle varje
+# förnyelse ha inneburit ett kort hål där ingen hund fick skickas — hundarna
+# hade blinkat bort ett par sekunder var 15:e sekund. Nu fylls namnen på i
+# bakgrunden utan att någon märker det, och tystnaden sparas till de lägen
+# där vi faktiskt är osäkra: ny plats, tystnad plats, krock, namnbyte.
+_NAMN_FRAGA = 15.0          # be om namnet på nytt så här ofta
 _NAMN_TTL = 90.0            # äldre bekräftelse än så litar vi inte på
 _PLATS_TYST = 15.0          # en plats som inte hörts på så länge har lämnat listan
 _namn_tid = {}              # plats -> när namnet senast bekräftades
@@ -147,6 +158,12 @@ def namn_farskt(asset_id):
     """Är platsens namn bekräftat nyligen nog att lita på?"""
     nar = _namn_tid.get(int(asset_id))
     return nar is not None and (time.time() - nar) <= _NAMN_TTL
+
+
+def _bor_fragas(asset_id):
+    """Är det dags att be Alphan bekräfta namnet igen?"""
+    nar = _namn_tid.get(int(asset_id))
+    return nar is None or (time.time() - nar) > _NAMN_FRAGA
 
 
 def glom_namnen(anledning):
@@ -207,7 +224,7 @@ def _maybe_request_name(channel, idx):
     # name_done betyder "båda sidorna har kommit in", inte "namnet gäller för
     # alltid". Har bekräftelsen hunnit bli gammal frågar vi om igen — det var
     # den saknade förnyelsen som lät ett namn överleva en omnumrering.
-    if sync_buffer.get(str(idx) + "_name_done") and namn_farskt(idx):
+    if sync_buffer.get(str(idx) + "_name_done") and not _bor_fragas(idx):
         return
     with _pending_lock:
         _pending_names.add(idx)
@@ -222,7 +239,7 @@ def _name_request_loop():
         with _pending_lock:
             _pending_names.difference_update(
                 {i for i in _pending_names
-                 if sync_buffer.get(str(i) + "_name_done") and namn_farskt(i)}
+                 if sync_buffer.get(str(i) + "_name_done") and not _bor_fragas(i)}
             )
             pending = sorted(_pending_names)
         if not pending:

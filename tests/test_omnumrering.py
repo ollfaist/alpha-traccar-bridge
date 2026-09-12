@@ -102,6 +102,23 @@ al._maybe_request_name(object(), 105)
 with al._pending_lock:
     kolla(u"en gammal bekräftelse frågas om igen", 105 in al._pending_names, True)
 
+# --- att fråga och att lita är två olika saker --------------------------
+# Styrde samma siffra båda skulle varje förnyelse bli ett hål där inga
+# positioner fick skickas. Hundarna hade blinkat bort var 15:e sekund.
+nollstall()
+namnsidor(105, u"Hundar 8")
+al._namn_tid[105] = time.time() - (al._NAMN_FRAGA + 1)
+kolla(u"efter frågeintervallet ber vi om ett nytt svar",
+      al._bor_fragas(105), True)
+kolla(u"men namnet duger fortfarande att skicka på",
+      al.namn_farskt(105), True)
+
+al._namn_tid[105] = time.time() - (al._NAMN_TTL + 1)
+kolla(u"först efter tillitsfönstret tystnar platsen",
+      al.namn_farskt(105), False)
+kolla(u"och frågeintervallet är det kortare av de två",
+      al._NAMN_FRAGA < al._NAMN_TTL, True)
+
 namnsidor(105, u"Hundar 8")
 kolla(u"och blir färsk igen när Alphan svarar", al.namn_farskt(105), True)
 
