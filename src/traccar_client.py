@@ -134,6 +134,48 @@ def _devices(admin):
     return r.json()
 
 
+def byt_namn(admin, gammalt_id, nytt_id, nytt_namn):
+    """Döper om en hund i Traccar i stället för att skapa en ny enhet.
+
+    Döper man om en hund i Alphan är det samma halsband och samma hund — bara
+    en ny etikett. Skapades en ny enhet delades historiken i två och den gamla
+    blev liggande tom. Att flytta både namn OCH uniqueId gör att spåren följer
+    med, och att ett framtida "Hundar 1" (Garmin återanvänder sina automatiska
+    namn) får en egen enhet i stället för att hamna ovanpå den här hunden.
+
+    Returnerar True om bytet gick igenom.
+    """
+    global _admin_nasta_forsok
+    if not admin or time.time() < _admin_nasta_forsok:
+        return False
+    try:
+        befintlig = next((d for d in _devices(admin)
+                          if str(d.get("uniqueId")) == gammalt_id), None)
+        if befintlig is None:
+            return False
+        # Finns det nya id:t redan är det inte ett namnbyte utan en hund som
+        # varit med förr. Då ska den enheten användas som den är.
+        if any(str(d.get("uniqueId")) == nytt_id for d in _devices(admin)):
+            return False
+        befintlig["name"] = nytt_namn
+        befintlig["uniqueId"] = nytt_id
+        r = _admin_request(admin, "PUT", "/api/devices/" + str(befintlig["id"]),
+                           json=befintlig)
+        if r.status_code in (200, 204):
+            logger.info("Döpte om %s till '%s' (%s) — historiken följer med",
+                        gammalt_id, nytt_namn, nytt_id)
+            with _registered_lock:
+                _registered.pop(gammalt_id, None)
+                _registered[nytt_id] = nytt_namn
+            return True
+        logger.warning("Kunde inte döpa om %s till %s: %s %s",
+                       gammalt_id, nytt_id, r.status_code, r.text[:200])
+    except requests.RequestException as e:
+        _admin_nasta_forsok = time.time() + _ADMIN_PAUS
+        logger.warning("Nådde inte Traccars admin-API vid namnbyte: %s", e)
+    return False
+
+
 def _ensure_device(admin, unique_id, name):
     """Ser till att enheten finns och att den heter det Garmin säger.
 

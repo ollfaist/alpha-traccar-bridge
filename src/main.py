@@ -4,7 +4,7 @@ import os
 import time
 import yaml
 from ant_listener import start as ant_start, dump as ant_dump, glom_namnen
-from traccar_client import send_position, hund_id
+from traccar_client import send_position, hund_id, byt_namn
 
 # ANT_DEBUG=1 ger de råa statusbyten från handenheten — används för att
 # se hur den faktiskt signalerar tappad kontakt.
@@ -40,6 +40,32 @@ def _clock_is_trustworthy():
         _clock_ok = True
         logger.info("System clock synchronised — timestamping positions")
     return _clock_ok
+
+
+MAX_FART = 25.0        # m/s — 90 km/h, långt över vad en hund gör
+MIN_HOPP = 500.0       # m — under detta kan det vara dålig GPS
+
+
+def meter(a, b):
+    """Grovt avstånd i meter. Noggrant nog på de här latituderna."""
+    return (((a[0] - b[0]) * 111320.0) ** 2 +
+            ((a[1] - b[1]) * 57000.0) ** 2) ** 0.5
+
+
+def rimligt_steg(forra, koord, nu):
+    """Går punkten ihop med hundens förra, fysiskt sett?
+
+    forra är (lat, lon, när) eller None. Korta hopp släpps alltid igenom —
+    en GPS-fix darrar, och under MIN_HOPP säger avståndet ingenting. Det är
+    de långa hoppen på kort tid som avslöjar att platsen bär en annan hund.
+    """
+    if not forra:
+        return True            # första punkten — inget att jämföra med
+    dt = nu - forra[2]
+    if dt <= 0:
+        return True
+    d = meter((forra[0], forra[1]), koord)
+    return d <= MIN_HOPP or (d / dt) <= MAX_FART
 
 
 def main():
@@ -83,6 +109,28 @@ def main():
     warned_namnlos = set()
     NAME_GRACE = 30.0
 
+    # Vilken plats som äger ett Traccar-id just nu. Två platser får aldrig
+    # skriva till samma enhet: då blir spåret en linje mellan två hundar.
+    agare = {}             # unique_id -> plats
+
+    # En hund kan inte teleportera. Hundlistan i Alphan kan däremot glida ett
+    # steg utan förvarning, och då bär en plats plötsligt en annan hunds
+    # position medan vårt namn ännu inte hunnit bekräftas om.
+    #
+    # Jakten 19 sep: 10:02:48 låg "Hundar 2" på plats 99 på 63.39017,
+    # 13.43142 med dist=13723 m. 10:03:04 fick Renhunden på plats 98 exakt
+    # den koordinaten och exakt det avståndet — listan hade glidit två steg.
+    # På kartan såg det ut som att hunden flyttat sig 16,8 km på 5 sekunder,
+    # direkt efter att föraren tappat kontakten med henne. Handenheten visade
+    # hela tiden ? på rätt plats.
+    #
+    # Fysiken avgör: 16,8 km på 5 sekunder är 12 000 km/h. Ett sådant hopp är
+    # aldrig hunden, oavsett vad namnet påstår.
+    senaste_punkt = {}     # unique_id -> (lat, lon, när)
+    plats_id = {}          # plats -> unique_id vi publicerade under sist
+
+    tystade = set()         # platser vi redan klagat på, så loggen inte svämmar
+
     # Tappad kontakt syns inte i statusbyten: Alphan sätter varken comm_lost
     # eller lägeskod 7 (noll sådana rader i loggen någonsin) — den upprepar
     # bara sin sista kända position. Jakten 11 sep stod "Hundar 2" på exakt
@@ -92,11 +140,6 @@ def main():
     # En levande GPS-fix darrar alltid någon meter. Bitidentiska koordinater
     # minut efter minut betyder därför inte "hunden står still" utan "det här
     # är samma gamla värde om igen". Det är det vi letar efter.
-    # Vilken plats som äger ett Traccar-id just nu. Två platser får aldrig
-    # skriva till samma enhet: då blir spåret en linje mellan två hundar.
-    agare = {}             # unique_id -> plats
-    tystade = set()         # platser vi redan klagat på, så loggen inte svämmar
-
     frozen = {}            # slot -> (koordinat, när den frös)
     STALE_AFTER = 180.0    # 3 min identiska koordinater = tappad kontakt
     STALE_INTERVAL = 30.0  # och då räcker en position var 30:e sekund
@@ -192,6 +235,43 @@ def main():
         agare[unique_id] = slot
 
         dog_name = data["name"] if unique_id != "hund-namnlos-" + slot else unique_id
+        koord_nu = (data["lat"], data["lon"])
+
+        # Har platsen bytt id sedan sist kan det vara två helt olika saker.
+        #
+        # Samma hund omdöpt i Alphan: positionen ligger kvar där den var, för
+        # det är bara etiketten som ändrats. Då ska Traccar-enheten byta namn
+        # och id, inte dubbleras — annars delas spåren i två och den gamla
+        # enheten blir liggande tom. Det var det som hände med Renhunden
+        # 19 sep: hon lades till som "Hundar 1", döptes om direkt, och fanns
+        # sedan som två hundar.
+        #
+        # En annan hund på samma plats: positionen hoppar. Då ska den nya
+        # hunden få en egen enhet, precis som förut.
+        gammalt_id = plats_id.get(slot)
+        if gammalt_id and gammalt_id != unique_id:
+            if rimligt_steg(senaste_punkt.get(gammalt_id), koord_nu, now) and byt_namn(
+                    admin, gammalt_id, unique_id, dog_name):
+                senaste_punkt[unique_id] = senaste_punkt.pop(gammalt_id, None)
+                agare.pop(gammalt_id, None)
+            else:
+                senaste_punkt.pop(gammalt_id, None)
+        plats_id[slot] = unique_id
+
+        # En hund kan inte teleportera. Hoppar punkten längre än fysiken
+        # tillåter bär platsen en annan hund än namnet påstår — listan har
+        # glidit och vårt namn är inte omfrågat än. Då skickas ingenting, och
+        # namnen frågas om på en gång. Se senaste_punkt ovan.
+        if not rimligt_steg(senaste_punkt.get(unique_id), koord_nu, now):
+            forra = senaste_punkt[unique_id]
+            logger.warning("Plats %s: '%s' skulle ha flyttat sig %.0f m på "
+                           "%.0f s — omöjligt. Skickar inget och frågar om "
+                           "namnen.", slot, dog_name,
+                           meter((forra[0], forra[1]), koord_nu), now - forra[2])
+            glom_namnen("omöjligt hopp på plats %s" % slot)
+            senaste_punkt.pop(unique_id, None)
+            return
+        senaste_punkt[unique_id] = (data["lat"], data["lon"], now)
 
         logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
                     dog_name, slot, unique_id,
