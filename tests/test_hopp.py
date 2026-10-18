@@ -113,5 +113,59 @@ kolla(u"bakåt i tiden släpps också igenom",
       main.rimligt_steg((63.2500, 13.3500, 1000.0), (63.3900, 13.4300), 999.0),
       True)
 
+# --- en hund som hörs av igen efter en lång tystnad ----------------------
+# 18 okt 12:43: Wikström låg NotConnected på en frusen punkt och rapporterade den
+# var 30:e sekund. Kom tillbaka 686 m därifrån. Vakten nollställde klockan vid
+# varje upprepning, räknade 19 s i stället för minuterna hon varit borta (36 m/s)
+# och stoppade en riktig position — plus att alla namn frågades om i onödan.
+FRUSEN = (63.334959, 13.346479)
+TILLBAKA = (63.336096, 13.334656)
+kolla(u"avståndet är det loggen visade (686 m)",
+      round(main.meter(FRUSEN, TILLBAKA)), 686)
+
+
+def spela(nollstall_vid_upprepning):
+    """Hunden hörs av sist vid t=0 och upprepar sedan punkten var 30:e sekund
+    i nästan nio minuter. Returnerar om den nya positionen vid t=529 släpps igenom."""
+    senaste = {}
+    uid = "hund-wikstrom"
+    main.notera_punkt(senaste, uid, FRUSEN[0], FRUSEN[1], 0.0)
+    for t in range(30, 540, 30):
+        if nollstall_vid_upprepning:
+            senaste[uid] = (FRUSEN[0], FRUSEN[1], float(t))     # så som det var förut
+        else:
+            main.notera_punkt(senaste, uid, FRUSEN[0], FRUSEN[1], float(t))
+    # Sista upprepningen kom vid t=510 och hunden hörs av vid t=529: 19 s senare,
+    # precis som i loggen (12:43:27 -> 12:43:46).
+    return main.rimligt_steg(senaste.get(uid), TILLBAKA, 529.0)
+
+
+kolla(u"förut: den riktiga positionen stoppades (felet)", spela(True), False)
+kolla(u"nu: den släpps igenom", spela(False), True)
+
+# Klockan ska stå kvar på när punkten var NY, inte när den skickades om.
+senaste = {}
+main.notera_punkt(senaste, "x", 63.1, 13.1, 100.0)
+main.notera_punkt(senaste, "x", 63.1, 13.1, 130.0)
+main.notera_punkt(senaste, "x", 63.1, 13.1, 160.0)
+kolla(u"upprepad punkt behåller tidsstämpeln", senaste["x"][2], 100.0)
+
+main.notera_punkt(senaste, "x", 63.2, 13.1, 190.0)
+kolla(u"en ny punkt tar över klockan", senaste["x"], (63.2, 13.1, 190.0))
+
+# Skyddet mot det vakten är till för får inte försvagas: en hund som är i kontakt
+# hela tiden och plötsligt "är" 16,8 km bort är fortfarande omöjlig.
+levande = {}
+main.notera_punkt(levande, "y", 63.24408, 13.35722, 1000.0)
+main.notera_punkt(levande, "y", 63.24409, 13.35723, 1001.5)
+main.notera_punkt(levande, "y", 63.24410, 13.35724, 1003.0)
+kolla(u"levande hund som 'teleporterar' stoppas fortfarande",
+      main.rimligt_steg(levande["y"], (63.39017, 13.43142), 1005.0), False)
+
+# Tom post (efter ett namnbyte utan tidigare punkt) får inte krascha.
+tomma = {"z": None}
+main.notera_punkt(tomma, "z", 63.0, 13.0, 5.0)
+kolla(u"saknad tidigare punkt kraschar inte", tomma["z"], (63.0, 13.0, 5.0))
+
 print(u"\n%s" % (u"ALLA KONTROLLER OK" if fel == 0 else u"%d FEL" % fel))
 sys.exit(1 if fel else 0)

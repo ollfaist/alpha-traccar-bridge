@@ -68,6 +68,25 @@ def rimligt_steg(forra, koord, nu):
     return d <= MIN_HOPP or (d / dt) <= MAX_FART
 
 
+def notera_punkt(senaste, uid, lat, lon, nu):
+    """Bokför hundens senaste punkt — men bara när den är NY.
+
+    Tidsstämpeln ska säga när hunden senast hördes av, inte när vi senast
+    skickade om samma värde. En hund utan kontakt upprepar sin frusna punkt var
+    30:e sekund; nollställde varje upprepning klockan såg en hund som hördes av
+    igen minuter senare ut att ha flyttat sig på några sekunder.
+
+    Det hände 18 okt 12:43: Wikström låg NotConnected på 63.334959, 13.346479 och
+    kom tillbaka 686 m därifrån. Klockan gick 19 s från senaste upprepningen i
+    stället för de minuter hon varit borta — 36 m/s, över gränsen — så en riktig
+    position stoppades och namnen frågades om i onödan.
+    """
+    forra = senaste.get(uid)
+    if forra and forra[0] == lat and forra[1] == lon:
+        return
+    senaste[uid] = (lat, lon, nu)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dump", action="store_true",
@@ -271,7 +290,7 @@ def main():
             glom_namnen("omöjligt hopp på plats %s" % slot)
             senaste_punkt.pop(unique_id, None)
             return
-        senaste_punkt[unique_id] = (data["lat"], data["lon"], now)
+        notera_punkt(senaste_punkt, unique_id, data["lat"], data["lon"], now)
 
         logger.info("Hund '%s' [%s -> %s]: %.6f, %.6f  %s  dist=%dm%s",
                     dog_name, slot, unique_id,
