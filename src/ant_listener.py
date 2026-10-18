@@ -545,9 +545,90 @@ def start(device_id: int, on_position, reconnect_delay: int = 5):
         time.sleep(reconnect_delay)
 
 
-def dump():
-    """Raw page dump — prints all received pages for protocol analysis."""
+# Sidor bryggan känner igen. Allt annat som dyker upp i en fångst flaggas.
+_KANDA_SIDOR = {0x01: "Asset Location 1", 0x02: "Asset Location 2",
+                0x03: "Inga hundar", 0x10: "Identitet 1 (namn)",
+                0x11: "Identitet 2 (namn)", 0x52: "Handenhetens batteri"}
+
+
+class Insamling(object):
+    """Samlar råa sidor och räknar dem, så två lägen går att jämföra.
+
+    Syftet är att svara på "skickar handenheten något annat i det här läget?" —
+    något bryggan idag inte avkodar eller tyst kastar. Rent dataobjekt utan radio,
+    så logiken går att prova utan en handenhet.
+    """
+
+    def __init__(self):
+        self.antal = {}          # sida -> antal
+        self.byte1 = {}          # (sida, byte1) -> antal  (byte1 bär id + flaggor)
+        self.status = {}         # statusbyte i sida 1 -> antal
+        self.exempel = {}        # sida -> första råa ramarna
+        self.okanda = {}         # sida -> antal, för sidor bryggan inte känner
+
+    def ta_emot(self, data):
+        sida = data[0]
+        self.antal[sida] = self.antal.get(sida, 0) + 1
+        if len(data) > 1:
+            k = (sida, data[1])
+            self.byte1[k] = self.byte1.get(k, 0) + 1
+        if sida == 0x01 and len(data) > 5:
+            self.status[data[5]] = self.status.get(data[5], 0) + 1
+        ex = self.exempel.setdefault(sida, [])
+        if len(ex) < 3 and list(data) not in ex:
+            ex.append(list(data))
+        if sida not in _KANDA_SIDOR:
+            self.okanda[sida] = self.okanda.get(sida, 0) + 1
+
+    def rapport(self, sekunder):
+        rad = []
+        tot = sum(self.antal.values())
+        rad.append("Fångst: %d ramar på %.0f s  (%.1f ramar/s)" % (tot, sekunder, tot / max(sekunder, 1e-9)))
+        rad.append("")
+        rad.append("SIDOR")
+        for sida in sorted(self.antal):
+            namn = _KANDA_SIDOR.get(sida, "*** OKÄND — bryggan avkodar inte den här ***")
+            rad.append("  0x%02X  %6d  %s" % (sida, self.antal[sida], namn))
+        if self.okanda:
+            rad.append("")
+            rad.append("!! %d okända sidtyper — det här är sådant som sänds men som bryggan idag "
+                       "kastar tyst: %s" % (len(self.okanda),
+                                            ", ".join("0x%02X" % s for s in sorted(self.okanda))))
+        rad.append("")
+        rad.append("BYTE 1 per sida (hundens plats + flaggor; övre bitarna skiljer sidtyper)")
+        for (sida, b1), n in sorted(self.byte1.items()):
+            rad.append("  sida 0x%02X  byte1=0x%02X (plats %2d)  %6d" % (sida, b1, b1 & 0x1F, n))
+        if self.status:
+            rad.append("")
+            rad.append("STATUSBYTE i sida 1 (bit 0-2 läge, 3 lågt batteri, 4 GPS borta, 5 kontakt borta, "
+                       "6-7 AVKODAS INTE idag)")
+            bit67 = 0
+            for sb, n in sorted(self.status.items()):
+                hog = (sb >> 6) & 0x03
+                if hog:
+                    bit67 += n
+                rad.append("  0x%02X  läge=%d lågbatt=%d gps_borta=%d kontakt_borta=%d  bit6-7=%d   %6d"
+                           % (sb, sb & 0x07, (sb >> 3) & 1, (sb >> 4) & 1, (sb >> 5) & 1, hog, n))
+            rad.append("  -> %d av %d ramar har bit 6 eller 7 satt"
+                       % (bit67, sum(self.status.values())))
+        rad.append("")
+        rad.append("EXEMPEL (råa ramar, upp till tre olika per sida)")
+        for sida in sorted(self.exempel):
+            for ram in self.exempel[sida]:
+                rad.append("  P%02x: %s" % (sida, " ".join("%02x" % b for b in ram)))
+        return "\n".join(rad)
+
+
+def dump(sekunder=None):
+    """Råfångst. Utan tid skrivs varje sida ut löpande (Ctrl-C avslutar). Med en tid
+    i sekunder fångar den och skriver en sammanfattning, så två lägen går att jämföra."""
+    insamling = Insamling()
+    start_t = time.time()
+
     def on_data(data):
+        if sekunder:
+            insamling.ta_emot(data)
+            return
         page = data[0]
         if page != 0x03:
             print("P{:02x}: {}".format(page, " ".join("{:02x}".format(b) for b in data)))
@@ -560,12 +641,37 @@ def dump():
     channel.set_rf_freq(57)
     channel.set_id(0, 41, 0)
 
-    print("Raw dump — Ctrl-C to stop")
+    # Namnsidorna skickas bara på begäran, precis som i tjänsten. Utan begäran
+    # missar fångsten just de sidor där ett annat läge kan skilja sig.
+    stopp = threading.Event()
+
+    def fraga():
+        while not stopp.wait(5.0):
+            try:
+                channel.send_acknowledged_data(_REQUEST_ID_PAYLOAD)
+            except Exception:
+                pass
+
+    if sekunder:
+        print("Fångar i %d s — håll handenheten på och nära Pi:n" % sekunder)
+        threading.Timer(sekunder, node.stop).start()
+        threading.Thread(target=fraga, daemon=True).start()
+    else:
+        print("Raw dump — Ctrl-C to stop")
     try:
         channel.open()
         node.start()
     except KeyboardInterrupt:
         pass
     finally:
-        channel.close()
-        node.stop()
+        stopp.set()
+        try:
+            channel.close()
+        except Exception:
+            pass
+        try:
+            node.stop()
+        except Exception:
+            pass
+    if sekunder:
+        print(insamling.rapport(time.time() - start_t))

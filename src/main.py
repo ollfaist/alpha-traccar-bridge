@@ -89,13 +89,15 @@ def notera_punkt(senaste, uid, lat, lon, nu):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--sek", type=int, default=None,
+                        help="Med --dump: fånga så här många sekunder och skriv en sammanfattning")
     parser.add_argument("--dump", action="store_true",
                         help="Raw page dump for protocol analysis, no Traccar forwarding")
     args = parser.parse_args()
 
     if args.dump:
         print("Raw dump mode — Ctrl-C to stop")
-        ant_dump()
+        ant_dump(args.sek)
         return
 
     config = load_config()
